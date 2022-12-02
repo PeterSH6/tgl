@@ -502,6 +502,9 @@ else:
     best_e = 0
     tap = 0
     tauc = 0
+    avg_time = 0
+    avg_throghput = 0
+    avg_sample_time = 0
     for e in range(train_param['epoch']):
         print('Epoch {:d}:'.format(e))
         time_sample = 0
@@ -539,6 +542,8 @@ else:
                     train_param['batch_size'] // train_param['reorder'] * i) - 1
                 group_indexes.append(np.concatenate(
                     [additional_idx, base_idx])[:base_idx.shape[0]])
+
+        total_samples = 0
         with tqdm(total=itr_tot + max((val_edge_end - train_edge_end) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus) as pbar:
             for _, rows in df[:train_edge_end].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
                 t_tot_s = time.time()
@@ -546,6 +551,7 @@ else:
                     [rows.src.values, rows.dst.values, neg_link_sampler.sample(len(rows))]).astype(np.int32)
                 ts = np.concatenate(
                     [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
+                total_samples += len(root_nodes)
                 if sampler is not None:
                     if 'no_neg' in sample_param and sample_param['no_neg']:
                         pos_root_end = root_nodes.shape[0] * 2 // 3
@@ -626,6 +632,8 @@ else:
             total_loss, ap, auc))
         print('\ttotal time:{:.2f}s sample time:{:.2f}s'.format(
             time_tot, time_sample))
+        print('\ttotal samples:{:.2f}; total throughput:{:.2f}samples/s'.format(
+            total_samples,  total_samples / time_tot))
 
     print('Best model at epoch {}.'.format(best_e))
     print('\ttest ap:{:4f}  test auc:{:4f}'.format(tap, tauc))
