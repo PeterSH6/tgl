@@ -2,6 +2,7 @@ import torch
 import dgl
 import math
 import numpy as np
+import torch.distributed as dist
 
 class TimeEncode(torch.nn.Module):
 
@@ -73,14 +74,14 @@ class TransfomerAttentionLayer(torch.nn.Module):
     def forward(self, b):
         assert(self.dim_time + self.dim_node_feat + self.dim_edge_feat > 0)
         if b.num_edges() == 0:
-            return torch.zeros((b.num_dst_nodes(), self.dim_out), device=torch.device('cuda:0'))
+            return torch.zeros((b.num_dst_nodes(), self.dim_out), device=torch.device(f'cuda:{dist.get_rank()}'))
         if self.dim_time > 0:
             time_feat = self.time_enc(b.edata['dt'])
-            zero_time_feat = self.time_enc(torch.zeros(b.num_dst_nodes(), dtype=torch.float32, device=torch.device('cuda:0')))
+            zero_time_feat = self.time_enc(torch.zeros(b.num_dst_nodes(), dtype=torch.float32, device=torch.device(f'cuda:{dist.get_rank()}')))
         if self.combined:
-            Q = torch.zeros((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))
-            K = torch.zeros((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))
-            V = torch.zeros((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))
+            Q = torch.zeros((b.num_edges(), self.dim_out), device=torch.device(f'cuda:{dist.get_rank()}'))
+            K = torch.zeros((b.num_edges(), self.dim_out), device=torch.device(f'cuda:{dist.get_rank()}'))
+            V = torch.zeros((b.num_edges(), self.dim_out), device=torch.device(f'cuda:{dist.get_rank()}'))
             if self.dim_node_feat > 0:
                 Q += self.w_q_n(b.srcdata['h'][:b.num_dst_nodes()])[b.edges()[1]]
                 K += self.w_k_n(b.srcdata['h'][b.num_dst_nodes():])[b.edges()[0] - b.num_dst_nodes()]
@@ -102,7 +103,7 @@ class TransfomerAttentionLayer(torch.nn.Module):
             b.update_all(dgl.function.copy_edge('v', 'm'), dgl.function.sum('m', 'h'))
         else:
             if self.dim_time == 0 and self.dim_node_feat == 0:
-                Q = torch.ones((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))
+                Q = torch.ones((b.num_edges(), self.dim_out), device=torch.device(f'cuda:{dist.get_rank()}'))
                 K = self.w_k(b.edata['f'])
                 V = self.w_v(b.edata['f'])
             elif self.dim_time == 0 and self.dim_edge_feat == 0:
@@ -131,7 +132,7 @@ class TransfomerAttentionLayer(torch.nn.Module):
             att = dgl.ops.edge_softmax(b, self.att_act(torch.sum(Q*K, dim=2)))
             att = self.att_dropout(att)
             V = torch.reshape(V*att[:, :, None], (V.shape[0], -1))
-            b.srcdata['v'] = torch.cat([torch.zeros((b.num_dst_nodes(), V.shape[1]), device=torch.device('cuda:0')), V], dim=0)
+            b.srcdata['v'] = torch.cat([torch.zeros((b.num_dst_nodes(), V.shape[1]), device=torch.device(f'cuda:{dist.get_rank()}')), V], dim=0)
             b.update_all(dgl.function.copy_src('v', 'm'), dgl.function.sum('m', 'h'))
         if self.dim_node_feat != 0:
             rst = torch.cat([b.dstdata['h'], b.srcdata['h'][:b.num_dst_nodes()]], dim=1)

@@ -3,6 +3,7 @@ from sampler import *
 from modules import *
 from sklearn.metrics import average_precision_score, roc_auc_score
 from dgl.utils.shared_mem import create_shared_mem_array, get_shared_mem_array
+import torch.distributed as dist
 from tqdm import tqdm
 import numpy as np
 import threading
@@ -24,7 +25,7 @@ parser.add_argument('--omp_num_threads', type=int, default=8)
 parser.add_argument("--local_rank", type=int, default=-1)
 args = parser.parse_args()
 
-
+print(args.local_rank)
 # set which GPU to use
 if args.local_rank < args.num_gpus:
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.local_rank)
@@ -42,6 +43,7 @@ def set_seed(seed):
 
 
 set_seed(args.seed)
+
 torch.distributed.init_process_group(
     backend='gloo', timeout=datetime.timedelta(0, 3600))
 nccl_group = torch.distributed.new_group(
@@ -166,7 +168,7 @@ class DataPipelineThread(threading.Thread):
             prepare_input(mfgs, node_feats, edge_feats, pinned=True, nfeat_buffs=pinned_nfeat_buffs,
                           efeat_buffs=pinned_efeat_buffs, nids=nids, eids=eids)
             if mailbox is not None:
-                mailbox.prep_input_mails(mfgs[0], use_pinned_buffers=True)
+                mailbox.prep_input_mails(mfgs[0], use_pinned_buffers=False)
                 self.mfgs = mfgs
                 self.root = self.my_root[0]
                 self.ts = self.my_ts[0]
@@ -197,7 +199,7 @@ class DataPipelineThread(threading.Thread):
 if args.local_rank < args.num_gpus:
     # GPU worker process
     model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
-                         memory_param, gnn_param, train_param).to(f'cuda:0')
+                         memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
     find_unused_parameters = True if sample_param['history'] > 1 else False
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
                                                       args.local_rank], process_group=nccl_group, output_device=args.local_rank, find_unused_parameters=find_unused_parameters)
@@ -224,7 +226,7 @@ if args.local_rank < args.num_gpus:
             continue
         elif my_model_state[0] == 3:
             model.load_state_dict(torch.load(
-                path_saver, map_location=torch.device('cuda:0')))
+                path_saver, map_location=torch.device(f'cuda:{dist.get_rank()}')))
             continue
         elif my_model_state[0] == 5:
             torch.distributed.gather_object(

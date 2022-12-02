@@ -2,6 +2,7 @@ import torch
 import dgl
 from layers import TimeEncode
 from torch_scatter import scatter
+import torch.distributed as dist
 
 
 class MailBox():
@@ -37,7 +38,7 @@ class MailBox():
         self.mailbox = self.mailbox.cuda()
         self.mailbox_ts = self.mailbox_ts.cuda()
         self.next_mail_pos = self.next_mail_pos.cuda()
-        self.device = torch.device('cuda:0')
+        self.device = torch.device(f'cuda:{dist.get_rank()}')
 
     def allocate_pinned_memory_buffers(self, sample_param, batch_size):
         limit = int(batch_size * 3.3)

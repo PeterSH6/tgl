@@ -5,6 +5,7 @@ import dgl
 import time
 import pandas as pd
 import numpy as np
+import torch.distributed as dist
 
 
 def load_feat(d, rand_de=0, rand_dn=0):
@@ -63,7 +64,7 @@ def to_dgl_blocks(ret, hist, reverse=False, cuda=True):
             b.dstdata['ts'] = torch.from_numpy(r.ts())
         b.edata['ID'] = torch.from_numpy(r.eid())
         if cuda:
-            mfgs.append(b.to('cuda:0'))
+            mfgs.append(b.to(f'cuda:{dist.get_rank()}'))
         else:
             mfgs.append(b)
     mfgs = list(map(list, zip(*[iter(mfgs)] * hist)))
@@ -87,7 +88,7 @@ def node_to_dgl_blocks(root_nodes, ts, cuda=True):
 def mfgs_to_cuda(mfgs):
     for mfg in mfgs:
         for i in range(len(mfg)):
-            mfg[i] = mfg[i].to('cuda:0')
+            mfg[i] = mfg[i].to(f'cuda:{dist.get_rank()}')
     return mfgs
 
 
@@ -104,7 +105,7 @@ def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=Fals
                 unid = unts[:, 1]
                 # import pdb; pdb.set_trace()
                 b = dgl.create_block((idx + num_dst, mfgs[0][i].edges()[
-                                     1]), num_src_nodes=unts.shape[0] + num_dst, num_dst_nodes=num_dst, device=torch.device('cuda:0'))
+                                     1]), num_src_nodes=unts.shape[0] + num_dst, num_dst_nodes=num_dst, device=torch.device(f'cuda:{dist.get_rank()}'))
                 b.srcdata['ts'] = torch.cat(
                     [mfgs[0][i].srcdata['ts'][:num_dst], uts], dim=0)
                 b.srcdata['ID'] = torch.cat(
