@@ -562,6 +562,7 @@ else:
                 ts = np.concatenate(
                     [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
                 total_samples += len(root_nodes)
+                sample_time_start = time.time()
                 if sampler is not None:
                     if 'no_neg' in sample_param and sample_param['no_neg']:
                         pos_root_end = root_nodes.shape[0] * 2 // 3
@@ -570,12 +571,14 @@ else:
                     else:
                         sampler.sample(root_nodes, ts)
                     ret = sampler.get_ret()
-                    time_sample += ret[0].sample_time()
+                    # time_sample += ret[0].sample_time()
                 if gnn_param['arch'] != 'identity':
                     mfgs = to_dgl_blocks(
                         ret, sample_param['history'], cuda=False)
                 else:
                     mfgs = node_to_dgl_blocks(root_nodes, ts, cuda=False)
+                sample_time_end = time.time()
+                time_sample += sample_time_end - sample_time_start
                 multi_mfgs.append(mfgs)
                 multi_root.append(root_nodes)
                 multi_ts.append(ts)
