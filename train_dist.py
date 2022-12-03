@@ -169,12 +169,12 @@ class DataPipelineThread(threading.Thread):
                           efeat_buffs=pinned_efeat_buffs, nids=nids, eids=eids)
             if mailbox is not None:
                 mailbox.prep_input_mails(mfgs[0], use_pinned_buffers=False)
-                self.mfgs = mfgs
-                self.root = self.my_root[0]
-                self.ts = self.my_ts[0]
-                self.eid = self.my_eid[0]
-                if memory_param['deliver_to'] == 'neighbors':
-                    self.block = self.my_block[0]
+            self.mfgs = mfgs
+            self.root = self.my_root[0]
+            self.ts = self.my_ts[0]
+            self.eid = self.my_eid[0]
+            # if memory_param['deliver_to'] == 'neighbors':
+            #     self.block = self.my_block[0]
             # print(args.local_rank, 'finished')
 
     def get_stream(self):
@@ -201,6 +201,7 @@ if args.local_rank < args.num_gpus:
     model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
                          memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
     find_unused_parameters = True if sample_param['history'] > 1 else False
+    # find_unused_parameters = True
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
                                                       args.local_rank], process_group=nccl_group, output_device=args.local_rank, find_unused_parameters=find_unused_parameters)
     creterion = torch.nn.BCEWithLogitsLoss()
