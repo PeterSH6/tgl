@@ -200,8 +200,8 @@ if args.local_rank < args.num_gpus:
     # GPU worker process
     model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
                          memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
-    find_unused_parameters = True if sample_param['history'] > 1 else False
-    # find_unused_parameters = True
+    # find_unused_parameters = True if sample_param['history'] > 1 else False
+    find_unused_parameters = True
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
                                                       args.local_rank], process_group=nccl_group, output_device=args.local_rank, find_unused_parameters=find_unused_parameters)
     creterion = torch.nn.BCEWithLogitsLoss()
