@@ -549,8 +549,10 @@ else:
                     [additional_idx, base_idx])[:base_idx.shape[0]])
 
         total_samples = 0
+        ite = 0
         with tqdm(total=itr_tot + max((val_edge_end - train_edge_end) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus) as pbar:
             for _, rows in df[:train_edge_end].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
+                ite += 1
                 t_tot_s = time.time()
                 root_nodes = np.concatenate(
                     [rows.src.values, rows.dst.values, train_neg_link_sampler.sample(len(rows))]).astype(np.int32)
@@ -639,6 +641,8 @@ else:
             time_tot, time_sample))
         print('\ttotal samples:{:.2f}; total throughput:{:.2f}samples/s'.format(
             total_samples,  total_samples / time_tot))
+        print('\ttotal iterations: {}; avg sample time: {:.2f}'.format(
+            ite, time_sample / ite))
 
     print('Best model at epoch {}.'.format(best_e))
     print('\ttest ap:{:4f}  test auc:{:4f}'.format(tap, tauc))
