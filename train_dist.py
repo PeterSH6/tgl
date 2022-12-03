@@ -94,7 +94,7 @@ else:
     path_saver = [None]
 torch.distributed.broadcast_object_list(path_saver, src=0)
 path_saver = path_saver[0]
-
+build_graph_start = time.time()
 if args.local_rank == args.num_gpus:
     g, df = load_graph(args.data)
     num_nodes = [g['indptr'].shape[0] - 1]
@@ -103,6 +103,9 @@ else:
 torch.distributed.barrier()
 torch.distributed.broadcast_object_list(num_nodes, src=args.num_gpus)
 num_nodes = num_nodes[0]
+
+build_graph_end = time.time()
+print("build_graph_time: {}".format(build_graph_end - build_graph_start))
 
 mailbox = None
 if memory_param['type'] != 'none':
@@ -641,7 +644,7 @@ else:
             time_tot, time_sample))
         print('\ttotal samples:{:.2f}; total throughput:{:.2f}samples/s'.format(
             total_samples,  total_samples / time_tot))
-        print('\ttotal iterations: {}; avg sample time: {:.2f}'.format(
+        print('\ttotal iterations: {}; avg sample time: {}'.format(
             ite, time_sample / ite))
 
     print('Best model at epoch {}.'.format(best_e))
