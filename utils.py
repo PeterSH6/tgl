@@ -119,10 +119,10 @@ def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=Fals
     if node_feats is not None:
         for b in mfgs[0]:
             if pinned:
-                if nids is not None:
-                    idx = nids[i]
-                else:
-                    idx = b.srcdata['ID'].cpu().long()
+                # if nids is not None:
+                #     idx = nids[i]
+                # else:
+                idx = b.srcdata['ID'].cpu().long()
                 torch.index_select(node_feats, 0, idx,
                                    out=nfeat_buffs[i][:idx.shape[0]])
                 b.srcdata['h'] = nfeat_buffs[i][:idx.shape[0]].cuda(
@@ -137,10 +137,13 @@ def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=Fals
             for b in mfg:
                 if b.num_src_nodes() > b.num_dst_nodes():
                     if pinned:
-                        if eids is not None:
-                            idx = eids[i]
-                        else:
-                            idx = b.edata['ID'].cpu().long()
+                        # print("eids: {}".format(eids))
+                        # print("b.edata['ID']: {}".format(
+                        #     b.edata['ID'].cpu().long()))
+                        # if eids is not None:
+                        #     idx = eids[i]
+                        # else:
+                        idx = b.edata['ID'].cpu().long()
                         torch.index_select(
                             edge_feats, 0, idx, out=efeat_buffs[i][:idx.shape[0]])
                         b.edata['f'] = efeat_buffs[i][:idx.shape[0]].cuda(
