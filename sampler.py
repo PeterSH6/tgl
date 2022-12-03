@@ -15,6 +15,30 @@ class NegLinkSampler:
     def sample(self, n):
         return np.random.randint(self.num_nodes, size=n)
 
+class RandEdgeSampler:
+    """
+    Samples random edges from the graph.
+    """
+
+    def __init__(self, src_list, dst_list, seed=None):
+        self.seed = None
+        self.src_list = np.unique(src_list)
+        self.dst_list = np.unique(dst_list)
+
+        if seed is not None:
+            self.seed = seed
+            self.random_state = np.random.RandomState(self.seed)
+
+    def sample(self, size):
+        if self.seed is None:
+            src_index = np.random.randint(0, len(self.src_list), size)
+            dst_index = np.random.randint(0, len(self.dst_list), size)
+        else:
+
+            src_index = self.random_state.randint(0, len(self.src_list), size)
+            dst_index = self.random_state.randint(0, len(self.dst_list), size)
+        return self.dst_list[dst_index]
+
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--data', type=str, help='dataset name')

@@ -410,7 +410,11 @@ else:
                                   sample_param['num_thread'], 1, sample_param['layer'], sample_param['neighbor'],
                                   sample_param['strategy'] == 'recent', sample_param['prop_time'],
                                   sample_param['history'], float(sample_param['duration']))
-    neg_link_sampler = NegLinkSampler(g['indptr'].shape[0] - 1)
+    # neg_link_sampler = NegLinkSampler(g['indptr'].shape[0] - 1)
+    train_neg_link_sampler = RandEdgeSampler(
+        df[:train_edge_end]['src'].values, df[:train_edge_end]['dst'].values)
+    val_neg_link_sampler = RandEdgeSampler(
+        df['src'].values, df['dst'].values)
 
     def eval(mode='val'):
         if mode == 'val':
@@ -432,7 +436,7 @@ else:
         multi_block = list()
         for _, rows in eval_df.groupby(eval_df.index // train_param['batch_size']):
             root_nodes = np.concatenate(
-                [rows.src.values, rows.dst.values, neg_link_sampler.sample(len(rows))]).astype(np.int32)
+                [rows.src.values, rows.dst.values, val_neg_link_sampler.sample(len(rows))]).astype(np.int32)
             ts = np.concatenate(
                 [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
             if sampler is not None:
@@ -549,7 +553,7 @@ else:
             for _, rows in df[:train_edge_end].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
                 t_tot_s = time.time()
                 root_nodes = np.concatenate(
-                    [rows.src.values, rows.dst.values, neg_link_sampler.sample(len(rows))]).astype(np.int32)
+                    [rows.src.values, rows.dst.values, train_neg_link_sampler.sample(len(rows))]).astype(np.int32)
                 ts = np.concatenate(
                     [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
                 total_samples += len(root_nodes)
