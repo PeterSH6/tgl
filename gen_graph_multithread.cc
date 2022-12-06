@@ -417,7 +417,7 @@ std::vector<std::vector<double>> run(
 
     std::cout<< "TOTAL Graph Time by CPP multithread: " << get_chrono_duration(begin_, logic_finish_time_) << " seconds." << std::endl;
 
-    print_ultimate_result();
+    // print_ultimate_result();
 
     std::vector<std::vector<double>> ret_result;
     // 0 1 2 3: train indptr, indices, ts, eid
