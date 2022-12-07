@@ -12,7 +12,7 @@ const int THREAD_NUM = 128;
 const int MAX_NODE_NUM = 90000;
 
 // TODO: parameterized this param
-const bool add_reverse = false;
+bool add_reverse = false;
 
 std::mutex mtx[MAX_NODE_NUM];
 std::vector<CsvData> df; // df
@@ -61,6 +61,30 @@ double get_chrono_duration(system_clock::time_point lo, system_clock:: time_poin
     double time_secis = double(duration.count()) * microseconds::period::num / microseconds::period::den;
 
     return time_secis;
+}
+
+void gvc() {
+    df.clear();
+
+    int_train_indptr.clear();
+    int_train_indices.clear();
+    int_train_ts.clear();
+    int_train_eid.clear();
+    int_train_chain.clear();
+
+    int_full_indptr.clear();
+    int_full_indices.clear();
+    int_full_ts.clear();
+    int_full_eid.clear();
+    int_full_chain.clear();
+
+    ext_full_indptr.clear();
+    ext_full_indices.clear();
+    ext_full_ts.clear();
+    ext_full_eid.clear();
+    ext_full_chain.clear();
+    
+    return ;
 }
 
 /**
@@ -215,7 +239,7 @@ void build_graph(int lo, int hi, int tid, system_clock::time_point very_start_){
                 int_train_eid[src],
                 dst, row.time, row.id);
             if(add_reverse) {
-                update_CSR_with_lock(src,
+                update_CSR_with_lock(3 * dst + 1,
                     int_train_indices[dst],
                     int_train_ts[dst],
                     int_train_eid[dst],
@@ -230,7 +254,7 @@ void build_graph(int lo, int hi, int tid, system_clock::time_point very_start_){
                 int_full_eid[src],
                 dst, row.time, row.id);
             if(add_reverse) {
-                update_CSR_with_lock(dst,
+                update_CSR_with_lock(3 * dst + 2,
                     int_full_indices[dst],
                     int_full_ts[dst],
                     int_full_eid[dst],
@@ -244,7 +268,7 @@ void build_graph(int lo, int hi, int tid, system_clock::time_point very_start_){
             ext_full_eid[src],
             dst, row.time, row.id);
         if(add_reverse) {
-            update_CSR_with_lock(dst,
+            update_CSR_with_lock(3 * dst + 3,
                 ext_full_indices[dst],
                 ext_full_ts[dst],
                 ext_full_eid[dst],
@@ -353,8 +377,14 @@ std::vector<std::vector<double>> run(
 
     auto begin_ = system_clock::now();
 
+    gvc();
+
     // read the input data
     read_py(py_eid, py_src, py_dst, py_ts, py_int_roll, py_ext_roll, py_num_nodes, py_num_edges);
+
+    if(py_dataset_name == "REDDIT") {
+        add_reverse = true;
+    }
 
 	auto read_ = system_clock::now();
 
