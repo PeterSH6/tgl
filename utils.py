@@ -187,3 +187,30 @@ def get_pinned_buffers(sample_param, batch_size, node_feats, edge_feats):
             pinned_nfeat_buffs.insert(0, torch.zeros(
                 (limit, node_feats.shape[1]), pin_memory=True))
     return pinned_nfeat_buffs, pinned_efeat_buffs
+
+
+class DstRandEdgeSampler:
+    """
+    Samples random edges from the graph.
+    """
+
+    def __init__(self, dst_list, seed=None):
+        self.seed = None
+        self.dst_list = np.unique(dst_list)
+
+        if seed is not None:
+            self.seed = seed
+            self.random_state = np.random.RandomState(self.seed)
+
+    def sample(self, size):
+        if self.seed is None:
+            dst_index = np.random.randint(0, len(self.dst_list), size)
+        else:
+            dst_index = self.random_state.randint(0, len(self.dst_list), size)
+        return self.dst_list[dst_index]
+
+    def reset_random_state(self):
+        self.random_state = np.random.RandomState(self.seed)
+
+    def add_dst_list(self, dst):
+        self.dst_list = np.unique(np.concatenate((self.dst_list, dst)))

@@ -94,58 +94,64 @@ else:
     path_saver = [None]
 torch.distributed.broadcast_object_list(path_saver, src=0)
 path_saver = path_saver[0]
-# phase 1 build graph
-build_graph_start = time.time()
-if args.local_rank == args.num_gpus:
-    g, df = load_graph(args.data)
-    num_nodes = [g['indptr'].shape[0] - 1]
-else:
-    num_nodes = [None]
-torch.distributed.barrier()
-torch.distributed.broadcast_object_list(num_nodes, src=args.num_gpus)
-num_nodes = num_nodes[0]
 
-build_graph_end = time.time()
-print("build_graph_time: {}".format(build_graph_end - build_graph_start))
+
+def build_graph():
+    build_graph_start = time.time()
+    if args.local_rank == args.num_gpus:
+        g, df = load_graph(args.data)
+        num_nodes = [g['indptr'].shape[0] - 1]
+    else:
+        num_nodes = [None]
+    torch.distributed.barrier()
+    torch.distributed.broadcast_object_list(num_nodes, src=args.num_gpus)
+    num_nodes = num_nodes[0]
+
+    build_graph_end = time.time()
+    print("build_graph_time: {}".format(build_graph_end - build_graph_start))
+
+    mailbox = None
+    if memory_param['type'] != 'none':
+        if args.local_rank == 0:
+            node_memory = create_shared_mem_array('node_memory', torch.Size(
+                [num_nodes, memory_param['dim_out']]), dtype=torch.float32)
+            node_memory_ts = create_shared_mem_array(
+                'node_memory_ts', torch.Size([num_nodes]), dtype=torch.float32)
+            mails = create_shared_mem_array('mails', torch.Size(
+                [num_nodes, memory_param['mailbox_size'], 2 * memory_param['dim_out'] + dim_feats[4]]), dtype=torch.float32)
+            mail_ts = create_shared_mem_array('mail_ts', torch.Size(
+                [num_nodes, memory_param['mailbox_size']]), dtype=torch.float32)
+            next_mail_pos = create_shared_mem_array(
+                'next_mail_pos', torch.Size([num_nodes]), dtype=torch.long)
+            update_mail_pos = create_shared_mem_array(
+                'update_mail_pos', torch.Size([num_nodes]), dtype=torch.int32)
+            torch.distributed.barrier()
+            node_memory.zero_()
+            node_memory_ts.zero_()
+            mails.zero_()
+            mail_ts.zero_()
+            next_mail_pos.zero_()
+            update_mail_pos.zero_()
+        else:
+            torch.distributed.barrier()
+            node_memory = get_shared_mem_array('node_memory', torch.Size(
+                [num_nodes, memory_param['dim_out']]), dtype=torch.float32)
+            node_memory_ts = get_shared_mem_array(
+                'node_memory_ts', torch.Size([num_nodes]), dtype=torch.float32)
+            mails = get_shared_mem_array('mails', torch.Size(
+                [num_nodes, memory_param['mailbox_size'], 2 * memory_param['dim_out'] + dim_feats[4]]), dtype=torch.float32)
+            mail_ts = get_shared_mem_array('mail_ts', torch.Size(
+                [num_nodes, memory_param['mailbox_size']]), dtype=torch.float32)
+            next_mail_pos = get_shared_mem_array(
+                'next_mail_pos', torch.Size([num_nodes]), dtype=torch.long)
+            update_mail_pos = get_shared_mem_array(
+                'update_mail_pos', torch.Size([num_nodes]), dtype=torch.int32)
+        mailbox = MailBox(memory_param, num_nodes,
+                          dim_feats[4], node_memory, node_memory_ts, mails, mail_ts, next_mail_pos, update_mail_pos)
+    return g, df, mailbox
+
 
 mailbox = None
-if memory_param['type'] != 'none':
-    if args.local_rank == 0:
-        node_memory = create_shared_mem_array('node_memory', torch.Size(
-            [num_nodes, memory_param['dim_out']]), dtype=torch.float32)
-        node_memory_ts = create_shared_mem_array(
-            'node_memory_ts', torch.Size([num_nodes]), dtype=torch.float32)
-        mails = create_shared_mem_array('mails', torch.Size(
-            [num_nodes, memory_param['mailbox_size'], 2 * memory_param['dim_out'] + dim_feats[4]]), dtype=torch.float32)
-        mail_ts = create_shared_mem_array('mail_ts', torch.Size(
-            [num_nodes, memory_param['mailbox_size']]), dtype=torch.float32)
-        next_mail_pos = create_shared_mem_array(
-            'next_mail_pos', torch.Size([num_nodes]), dtype=torch.long)
-        update_mail_pos = create_shared_mem_array(
-            'update_mail_pos', torch.Size([num_nodes]), dtype=torch.int32)
-        torch.distributed.barrier()
-        node_memory.zero_()
-        node_memory_ts.zero_()
-        mails.zero_()
-        mail_ts.zero_()
-        next_mail_pos.zero_()
-        update_mail_pos.zero_()
-    else:
-        torch.distributed.barrier()
-        node_memory = get_shared_mem_array('node_memory', torch.Size(
-            [num_nodes, memory_param['dim_out']]), dtype=torch.float32)
-        node_memory_ts = get_shared_mem_array(
-            'node_memory_ts', torch.Size([num_nodes]), dtype=torch.float32)
-        mails = get_shared_mem_array('mails', torch.Size(
-            [num_nodes, memory_param['mailbox_size'], 2 * memory_param['dim_out'] + dim_feats[4]]), dtype=torch.float32)
-        mail_ts = get_shared_mem_array('mail_ts', torch.Size(
-            [num_nodes, memory_param['mailbox_size']]), dtype=torch.float32)
-        next_mail_pos = get_shared_mem_array(
-            'next_mail_pos', torch.Size([num_nodes]), dtype=torch.long)
-        update_mail_pos = get_shared_mem_array(
-            'update_mail_pos', torch.Size([num_nodes]), dtype=torch.int32)
-    mailbox = MailBox(memory_param, num_nodes,
-                      dim_feats[4], node_memory, node_memory_ts, mails, mail_ts, next_mail_pos, update_mail_pos)
 
 
 class DataPipelineThread(threading.Thread):
@@ -200,21 +206,7 @@ class DataPipelineThread(threading.Thread):
         return self.block
 
 
-if args.local_rank < args.num_gpus:
-    # GPU worker process
-    model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
-                         memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
-    # find_unused_parameters = True if sample_param['history'] > 1 else False
-    find_unused_parameters = True
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
-                                                      args.local_rank], process_group=nccl_group, output_device=args.local_rank, find_unused_parameters=find_unused_parameters)
-    creterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
-    pinned_nfeat_buffs, pinned_efeat_buffs = get_pinned_buffers(
-        sample_param, train_param['batch_size'], node_feats, edge_feats)
-    if mailbox is not None:
-        mailbox.allocate_pinned_memory_buffers(
-            sample_param, train_param['batch_size'])
+def train_gpu_worker():
     tot_loss = 0
     prev_thread = None
     while True:
@@ -404,109 +396,9 @@ if args.local_rank < args.num_gpus:
                     float(ap), None, dst=args.num_gpus)
                 torch.distributed.gather_object(
                     float(auc), None, dst=args.num_gpus)
-else:
-    # hosting process
-    train_edge_end = df[df['ext_roll'].gt(0)].index[0]
-    val_edge_end = df[df['ext_roll'].gt(1)].index[0]
-    sampler = None
-    if not ('no_sample' in sample_param and sample_param['no_sample']):
-        sampler = ParallelSampler(g['indptr'], g['indices'], g['eid'], g['ts'].astype(np.float32),
-                                  sample_param['num_thread'], 1, sample_param['layer'], sample_param['neighbor'],
-                                  sample_param['strategy'] == 'recent', sample_param['prop_time'],
-                                  sample_param['history'], float(sample_param['duration']))
-    # neg_link_sampler = NegLinkSampler(g['indptr'].shape[0] - 1)
-    train_neg_link_sampler = RandEdgeSampler(
-        df[:train_edge_end]['src'].values, df[:train_edge_end]['dst'].values)
-    val_neg_link_sampler = RandEdgeSampler(
-        df['src'].values, df['dst'].values)
 
-    def eval(mode='val'):
-        if mode == 'val':
-            eval_df = df[train_edge_end:val_edge_end]
-        elif mode == 'test':
-            eval_df = df[val_edge_end:]
-        elif mode == 'train':
-            eval_df = df[:train_edge_end]
-        ap_tot = list()
-        auc_tot = list()
-        train_param['batch_size'] = orig_batch_size
-        itr_tot = max(
-            len(eval_df) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus
-        train_param['batch_size'] = math.ceil(len(eval_df) / itr_tot)
-        multi_mfgs = list()
-        multi_root = list()
-        multi_ts = list()
-        multi_eid = list()
-        multi_block = list()
-        for _, rows in eval_df.groupby(eval_df.index // train_param['batch_size']):
-            root_nodes = np.concatenate(
-                [rows.src.values, rows.dst.values, val_neg_link_sampler.sample(len(rows))]).astype(np.int32)
-            ts = np.concatenate(
-                [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
-            if sampler is not None:
-                if 'no_neg' in sample_param and sample_param['no_neg']:
-                    pos_root_end = root_nodes.shape[0] * 2 // 3
-                    sampler.sample(
-                        root_nodes[:pos_root_end], ts[:pos_root_end])
-                else:
-                    sampler.sample(root_nodes, ts)
-                ret = sampler.get_ret()
-            if gnn_param['arch'] != 'identity':
-                mfgs = to_dgl_blocks(ret, sample_param['history'], cuda=False)
-            else:
-                mfgs = node_to_dgl_blocks(root_nodes, ts, cuda=False)
-            multi_mfgs.append(mfgs)
-            multi_root.append(root_nodes)
-            multi_ts.append(ts)
-            multi_eid.append(rows['Unnamed: 0'].values)
-            if mailbox is not None and memory_param['deliver_to'] == 'neighbors':
-                multi_block.append(to_dgl_blocks(
-                    ret, sample_param['history'], reverse=True, cuda=False)[0][0])
-            if len(multi_mfgs) == args.num_gpus:
-                model_state = [1] * (args.num_gpus + 1)
-                my_model_state = [None]
-                torch.distributed.scatter_object_list(
-                    my_model_state, model_state, src=args.num_gpus)
-                multi_mfgs.append(None)
-                my_mfgs = [None]
-                torch.distributed.scatter_object_list(
-                    my_mfgs, multi_mfgs, src=args.num_gpus)
-                if mailbox is not None:
-                    multi_root.append(None)
-                    multi_ts.append(None)
-                    multi_eid.append(None)
-                    my_root = [None]
-                    my_ts = [None]
-                    my_eid = [None]
-                    torch.distributed.scatter_object_list(
-                        my_root, multi_root, src=args.num_gpus)
-                    torch.distributed.scatter_object_list(
-                        my_ts, multi_ts, src=args.num_gpus)
-                    torch.distributed.scatter_object_list(
-                        my_eid, multi_eid, src=args.num_gpus)
-                    if memory_param['deliver_to'] == 'neighbors':
-                        multi_block.append(None)
-                        my_block = [None]
-                        torch.distributed.scatter_object_list(
-                            my_block, multi_block, src=args.num_gpus)
-                gathered_ap = [None] * (args.num_gpus + 1)
-                gathered_auc = [None] * (args.num_gpus + 1)
-                torch.distributed.gather_object(
-                    float(0), gathered_ap, dst=args.num_gpus)
-                torch.distributed.gather_object(
-                    float(0), gathered_auc, dst=args.num_gpus)
-                ap_tot += gathered_ap[:-1]
-                auc_tot += gathered_auc[:-1]
-                multi_mfgs = list()
-                multi_root = list()
-                multi_ts = list()
-                multi_eid = list()
-                multi_block = list()
-            pbar.update(1)
-        ap = float(torch.tensor(ap_tot).mean())
-        auc = float(torch.tensor(auc_tot).mean())
-        return ap, auc
 
+def train_host_process():
     best_ap = 0
     best_e = 0
     tap = 0
@@ -659,3 +551,134 @@ else:
     my_model_state = [None]
     torch.distributed.scatter_object_list(
         my_model_state, model_state, src=args.num_gpus)
+
+
+def eval(mode='val'):
+    if mode == 'val':
+        eval_df = df[train_edge_end:val_edge_end]
+    elif mode == 'test':
+        eval_df = df[val_edge_end:]
+    elif mode == 'train':
+        eval_df = df[:train_edge_end]
+    ap_tot = list()
+    auc_tot = list()
+    train_param['batch_size'] = orig_batch_size
+    itr_tot = max(
+        len(eval_df) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus
+    train_param['batch_size'] = math.ceil(len(eval_df) / itr_tot)
+    multi_mfgs = list()
+    multi_root = list()
+    multi_ts = list()
+    multi_eid = list()
+    multi_block = list()
+    for _, rows in eval_df.groupby(eval_df.index // train_param['batch_size']):
+        root_nodes = np.concatenate(
+            [rows.src.values, rows.dst.values, val_neg_link_sampler.sample(len(rows))]).astype(np.int32)
+        ts = np.concatenate(
+            [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
+        if sampler is not None:
+            if 'no_neg' in sample_param and sample_param['no_neg']:
+                pos_root_end = root_nodes.shape[0] * 2 // 3
+                sampler.sample(
+                    root_nodes[:pos_root_end], ts[:pos_root_end])
+            else:
+                sampler.sample(root_nodes, ts)
+            ret = sampler.get_ret()
+        if gnn_param['arch'] != 'identity':
+            mfgs = to_dgl_blocks(ret, sample_param['history'], cuda=False)
+        else:
+            mfgs = node_to_dgl_blocks(root_nodes, ts, cuda=False)
+        multi_mfgs.append(mfgs)
+        multi_root.append(root_nodes)
+        multi_ts.append(ts)
+        multi_eid.append(rows['Unnamed: 0'].values)
+        if mailbox is not None and memory_param['deliver_to'] == 'neighbors':
+            multi_block.append(to_dgl_blocks(
+                ret, sample_param['history'], reverse=True, cuda=False)[0][0])
+        if len(multi_mfgs) == args.num_gpus:
+            model_state = [1] * (args.num_gpus + 1)
+            my_model_state = [None]
+            torch.distributed.scatter_object_list(
+                my_model_state, model_state, src=args.num_gpus)
+            multi_mfgs.append(None)
+            my_mfgs = [None]
+            torch.distributed.scatter_object_list(
+                my_mfgs, multi_mfgs, src=args.num_gpus)
+            if mailbox is not None:
+                multi_root.append(None)
+                multi_ts.append(None)
+                multi_eid.append(None)
+                my_root = [None]
+                my_ts = [None]
+                my_eid = [None]
+                torch.distributed.scatter_object_list(
+                    my_root, multi_root, src=args.num_gpus)
+                torch.distributed.scatter_object_list(
+                    my_ts, multi_ts, src=args.num_gpus)
+                torch.distributed.scatter_object_list(
+                    my_eid, multi_eid, src=args.num_gpus)
+                if memory_param['deliver_to'] == 'neighbors':
+                    multi_block.append(None)
+                    my_block = [None]
+                    torch.distributed.scatter_object_list(
+                        my_block, multi_block, src=args.num_gpus)
+            gathered_ap = [None] * (args.num_gpus + 1)
+            gathered_auc = [None] * (args.num_gpus + 1)
+            torch.distributed.gather_object(
+                float(0), gathered_ap, dst=args.num_gpus)
+            torch.distributed.gather_object(
+                float(0), gathered_auc, dst=args.num_gpus)
+            ap_tot += gathered_ap[:-1]
+            auc_tot += gathered_auc[:-1]
+            multi_mfgs = list()
+            multi_root = list()
+            multi_ts = list()
+            multi_eid = list()
+            multi_block = list()
+        pbar.update(1)
+    ap = float(torch.tensor(ap_tot).mean())
+    auc = float(torch.tensor(auc_tot).mean())
+    return ap, auc
+
+
+# Phase1
+# build graph first
+# TODO: load df first
+g, df, mailbox = build_graph()
+
+if args.local_rank < args.num_gpus:
+    # GPU worker process
+    model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
+                         memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
+    # find_unused_parameters = True if sample_param['history'] > 1 else False
+    find_unused_parameters = True
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
+                                                      args.local_rank], process_group=nccl_group, output_device=args.local_rank, find_unused_parameters=find_unused_parameters)
+    creterion = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
+    pinned_nfeat_buffs, pinned_efeat_buffs = get_pinned_buffers(
+        sample_param, train_param['batch_size'], node_feats, edge_feats)
+    if mailbox is not None:
+        mailbox.allocate_pinned_memory_buffers(
+            sample_param, train_param['batch_size'])
+    train_gpu_worker()
+else:
+    # hosting process
+    phase1_len = int(len(df) * 0.6)
+    train_edge_end = int(phase1_len * 0.9) + 1
+    phase1_train_df = df[:train_edge_end]
+    phase1_val_df = df[train_edge_end:phase1_len]
+    val_edge_end = phase1_len
+
+    sampler = None
+    if not ('no_sample' in sample_param and sample_param['no_sample']):
+        sampler = ParallelSampler(g['indptr'], g['indices'], g['eid'], g['ts'].astype(np.float32),
+                                  sample_param['num_thread'], 1, sample_param['layer'], sample_param['neighbor'],
+                                  sample_param['strategy'] == 'recent', sample_param['prop_time'],
+                                  sample_param['history'], float(sample_param['duration']))
+    # neg_link_sampler = NegLinkSampler(g['indptr'].shape[0] - 1)
+    train_neg_link_sampler = DstRandEdgeSampler(
+        phase1_train_df['dst'].to_numpy())
+    val_neg_link_sampler = DstRandEdgeSampler(
+        df[:phase1_len]['dst'].to_numpy())
+    train_host_process()
