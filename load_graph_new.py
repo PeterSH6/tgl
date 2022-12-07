@@ -5,36 +5,40 @@ import pandas as pd
 from tqdm import tqdm
 import itertools
 
-def convert_list_to_np(lst, type_int = True):
+
+def convert_list_to_np(lst, type_int=True):
     n = np.array(lst)
     if type_int:
         n = n.astype(int)
     return n
 
 # Notice: Return Order: ext_full_indptr, ext_full_indices, ext_full_ts, ext_full_eid, df
-def load_graph_cpp(dataset_name: str, end_id_exclude: int):
+
+
+def load_graph_cpp(dataset_name: str, end_id_exclude: float):
 
     start_time = time.time()
 
-    df = pd.read_csv('/data/tgl/{}/edges.csv'.format(dataset_name))  # LINUX
-    # df = pd.read_csv('/home/ubuntu/data/{}/edges.csv'.format(dataset_name)) # AWS
-    
+    # df = pd.read_csv('/data/tgl/{}/edges.csv'.format(dataset_name))  # LINUX
+    df = pd.read_csv(
+        '/home/ubuntu/data/{}/edges.csv'.format(dataset_name))  # AWS
+
+    df_len = len(df)
+    end_id_exclude = int(end_id_exclude * df_len)
     # slice
     df = df[:end_id_exclude]
 
-    df.rename(columns={'Unnamed: 0': 'eid'}, inplace=True)
+    # df.rename(columns={'Unnamed: 0': 'eid'}, inplace=True)
 
-
-    df_eid = df["eid"].values.astype(np.int64)
+    df_eid = df["Unnamed: 0"].values.astype(np.int64)
     df_src = df["src"].values.astype(np.int64)
     df_dst = df["dst"].values.astype(np.int64)
-    df_ts  = df["time"].values.astype(np.float32)
+    df_ts = df["time"].values.astype(np.float32)
     df_introll = df["int_roll"].values.astype(np.int64)
     df_extroll = df["ext_roll"].values.astype(np.int64)
 
     py_num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1
     py_num_edges = len(df)
-
 
     print('num_nodes: ', py_num_nodes)
 
@@ -80,7 +84,6 @@ def load_graph_python(dataset_name, end_id_exclude):
     # df = pd.read_csv('/home/ubuntu/data/{}/edges.csv'.format(dataset_name)) # AWS
 
     df = df[:end_id_exclude]
-
 
     num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1
     print('num_nodes: ', num_nodes)
@@ -131,7 +134,8 @@ def load_graph_python(dataset_name, end_id_exclude):
         # ext_full_indptr[src + 1:] += 1
 
     for i in tqdm(range(num_nodes)):
-        int_train_indptr[i + 1] = int_train_indptr[i] + len(int_train_indices[i])
+        int_train_indptr[i + 1] = int_train_indptr[i] + \
+            len(int_train_indices[i])
         int_full_indptr[i + 1] = int_full_indptr[i] + len(int_full_indices[i])
         ext_full_indptr[i + 1] = ext_full_indptr[i] + len(ext_full_indices[i])
 
@@ -153,7 +157,8 @@ def load_graph_python(dataset_name, end_id_exclude):
 
     chain_end_time = time.time()
 
-    print("Chain cost time {} seconds".format(chain_end_time - chain_start_time))
+    print("Chain cost time {} seconds".format(
+        chain_end_time - chain_start_time))
 
     print('Sorting...')
 
@@ -166,7 +171,8 @@ def load_graph_python(dataset_name, end_id_exclude):
         eid[beg:end] = eid[beg:end][sidx]
 
     for i in tqdm(range(int_train_indptr.shape[0] - 1)):
-        tsort(i, int_train_indptr, int_train_indices, int_train_ts, int_train_eid)
+        tsort(i, int_train_indptr, int_train_indices,
+              int_train_ts, int_train_eid)
         tsort(i, int_full_indptr, int_full_indices, int_full_ts, int_full_eid)
         tsort(i, ext_full_indptr, ext_full_indices, ext_full_ts, ext_full_eid)
 
@@ -190,8 +196,3 @@ if __name__ == "__main__":
             if cnt % 1000 == 0:
                 print("Times: {}, {} != {}\n".format(cnt, a[i], o[i]))
     print(cnt)
-
-
-
-
-
