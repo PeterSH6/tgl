@@ -33,7 +33,7 @@ def load_graph_cpp(dataset_name: str, end_id_exclude: float):
     df_eid = df["Unnamed: 0"].values.astype(np.int64)
     df_src = df["src"].values.astype(np.int64)
     df_dst = df["dst"].values.astype(np.int64)
-    df_ts = df["time"].values.astype(np.float32)
+    df_ts = df["time"].values.astype(np.float64)
     df_introll = df["int_roll"].values.astype(np.int64)
     df_extroll = df["ext_roll"].values.astype(np.int64)
 
