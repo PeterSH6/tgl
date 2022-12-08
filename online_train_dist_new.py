@@ -38,6 +38,9 @@ os.environ['MKL_NUM_THREADS'] = str(args.omp_num_threads)
 
 logging.basicConfig(level=logging.DEBUG)
 
+ap_file = "retrain_online_ap.txt"
+auc_file = "retrain_online_auc.txt"
+
 
 def set_seed(seed):
     random.seed(seed)
@@ -593,6 +596,10 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
             new_data_eval_start = time.time()
             ap, auc = eval(mode='val',
                            eval_df=full_df.iloc[curr_start_index:curr_end_index], only_eval=True)
+            with open(ap_file, "a") as f_phase2:
+                f_phase2.write("{}\n".format(ap))
+            with open(auc_file, "a") as f_phase2:
+                f_phase2.write("{}\n".format(auc))
             print(
                 "evaluation using new data ap: {:.4f} auc: {:.4f}".format(ap, auc))
             new_data_eval_end = time.time()
@@ -743,6 +750,11 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
                     # tap, tauc = eval('test')
             print('\ttrain loss:{:.4f}  val ap:{:4f}  val auc:{:4f}'.format(
                 total_loss, ap, auc))
+            if phase1:
+                with open(ap_file, "a") as f_phase2:
+                    f_phase2.write("{}\n".format(ap))
+                with open(auc_file, "a") as f_phase2:
+                    f_phase2.write("{}\n".format(auc))
             print('\ttotal time:{:.2f}s sample time:{:.2f}s'.format(
                 time_tot, time_sample))
             print('\ttotal samples:{:.2f}; total throughput:{:.2f}samples/s'.format(
@@ -774,7 +786,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
 #         torch.distributed.barrier()
 phase1_percent = 0.3
 curr_start = 0
-retrain_num = 3
+retrain_num = 100
 if args.local_rank < args.num_gpus:
     phase1_start_time = time.time()
     model, mailbox = main(phase1_percent, curr_start, phase1=True,
@@ -784,7 +796,6 @@ if args.local_rank < args.num_gpus:
     # print('phase1 time: {}'.format(phase1_end_time - phase1_start_time))
     total_phase1_train_time += phase1_end_time - phase1_start_time
     total_train_time += phase1_end_time - phase1_start_time
-    print("---------------phase1 done--------------")
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
     for i in range(retrain_num):
@@ -804,6 +815,10 @@ if args.local_rank < args.num_gpus:
     # print("total_train_time: {}".format(total_train_time))
     # print("total_time: {}".format(total_train_time + total_build_graph_time))
 else:
+    with open(ap_file, "a") as f_phase2:
+        f_phase2.write("phase1\n")
+    with open(auc_file, "a") as f_phase2:
+        f_phase2.write("phase1\n")
     phase1_start_time = time.time()
     main(phase1_percent, curr_start, phase1=True,
          model=model, optimizer=optimizer, mailbox=mailbox)
@@ -815,7 +830,12 @@ else:
     print("---------------phase1 done--------------")
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
+    with open(ap_file, "a") as f_phase2:
+        f_phase2.write("phase2\n")
+    with open(auc_file, "a") as f_phase2:
+        f_phase2.write("phase2\n")
     for i in range(retrain_num):
+        print("---------------{}th incremental step--------------".format(i + 1))
         phase2_start_time = time.time()
         phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
         curr_start = phase1_percent + i * incremental_percent
