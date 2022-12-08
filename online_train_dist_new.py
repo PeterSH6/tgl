@@ -586,8 +586,8 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
                     multi_ts = list()
                     multi_eid = list()
                     multi_block = list()
-                if not only_eval:
-                    pbar.update(1)
+                # if not only_eval:
+                #     pbar.update(1)
             ap = float(torch.tensor(ap_tot).mean())
             auc = float(torch.tensor(auc_tot).mean())
             return ap, auc
@@ -659,95 +659,95 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
             ite = 0
             curr_df = full_df[curr_start_index:val_start_index]
             curr_df = curr_df.reset_index()
-            with tqdm(total=itr_tot + max((curr_end_index - val_start_index) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus) as pbar:
-                # for _, rows in df[curr_start_index:val_start_index].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
-                for _, rows in curr_df.groupby(curr_df.index // train_param['batch_size']):
-                    ite += 1
-                    t_tot_s = time.time()
-                    root_nodes = np.concatenate(
-                        [rows.src, rows.dst, train_neg_link_sampler.sample(len(rows))]).astype(np.int32)
-                    ts = np.concatenate(
-                        [rows.time, rows.time, rows.time]).astype(np.float32)
-                    total_samples += len(root_nodes)
-                    sample_time_start = time.time()
-                    if sampler is not None:
-                        if 'no_neg' in sample_param and sample_param['no_neg']:
-                            pos_root_end = root_nodes.shape[0] * 2 // 3
-                            sampler.sample(
-                                root_nodes[:pos_root_end], ts[:pos_root_end])
-                        else:
-                            sampler.sample(root_nodes, ts)
-                        ret = sampler.get_ret()
-                        # time_sample += ret[0].sample_time()
-                    if gnn_param['arch'] != 'identity':
-                        mfgs = to_dgl_blocks(
-                            ret, sample_param['history'], cuda=False)
+            # with tqdm(total=itr_tot + max((curr_end_index - val_start_index) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus) as pbar:
+            # for _, rows in df[curr_start_index:val_start_index].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
+            for _, rows in curr_df.groupby(curr_df.index // train_param['batch_size']):
+                ite += 1
+                t_tot_s = time.time()
+                root_nodes = np.concatenate(
+                    [rows.src, rows.dst, train_neg_link_sampler.sample(len(rows))]).astype(np.int32)
+                ts = np.concatenate(
+                    [rows.time, rows.time, rows.time]).astype(np.float32)
+                total_samples += len(root_nodes)
+                sample_time_start = time.time()
+                if sampler is not None:
+                    if 'no_neg' in sample_param and sample_param['no_neg']:
+                        pos_root_end = root_nodes.shape[0] * 2 // 3
+                        sampler.sample(
+                            root_nodes[:pos_root_end], ts[:pos_root_end])
                     else:
-                        mfgs = node_to_dgl_blocks(root_nodes, ts, cuda=False)
-                    sample_time_end = time.time()
-                    time_sample += sample_time_end - sample_time_start
-                    multi_mfgs.append(mfgs)
-                    multi_root.append(root_nodes)
-                    multi_ts.append(ts)
-                    multi_eid.append(rows['Unnamed: 0'].values)
-                    if mailbox is not None and memory_param['deliver_to'] == 'neighbors':
-                        multi_block.append(to_dgl_blocks(
-                            ret, sample_param['history'], reverse=True, cuda=False)[0][0])
-                    if len(multi_mfgs) == args.num_gpus:
-                        model_state = [0] * (args.num_gpus + 1)
-                        my_model_state = [None]
-                        torch.distributed.scatter_object_list(
-                            my_model_state, model_state, src=args.num_gpus)
-                        multi_mfgs.append(None)
-                        my_mfgs = [None]
-                        torch.distributed.scatter_object_list(
-                            my_mfgs, multi_mfgs, src=args.num_gpus)
-                        if mailbox is not None:
-                            multi_root.append(None)
-                            multi_ts.append(None)
-                            multi_eid.append(None)
-                            my_root = [None]
-                            my_ts = [None]
-                            my_eid = [None]
-                            torch.distributed.scatter_object_list(
-                                my_root, multi_root, src=args.num_gpus)
-                            torch.distributed.scatter_object_list(
-                                my_ts, multi_ts, src=args.num_gpus)
-                            torch.distributed.scatter_object_list(
-                                my_eid, multi_eid, src=args.num_gpus)
-                            if memory_param['deliver_to'] == 'neighbors':
-                                multi_block.append(None)
-                                my_block = [None]
-                                torch.distributed.scatter_object_list(
-                                    my_block, multi_block, src=args.num_gpus)
-                        multi_mfgs = list()
-                        multi_root = list()
-                        multi_ts = list()
-                        multi_eid = list()
-                        multi_block = list()
-                    pbar.update(1)
-                    time_tot += time.time() - t_tot_s
-                print('Training time:', time_tot)
-                model_state = [5] * (args.num_gpus + 1)
-                my_model_state = [None]
-                torch.distributed.scatter_object_list(
-                    my_model_state, model_state, src=args.num_gpus)
-                gathered_loss = [None] * (args.num_gpus + 1)
-                torch.distributed.gather_object(
-                    float(0), gathered_loss, dst=args.num_gpus)
-                total_loss = np.sum(np.array(gathered_loss) *
-                                    train_param['batch_size'])
-                ap, auc = eval('val')
-                if ap > best_ap:
-                    best_e = e
-                    best_ap = ap
-                    model_state = [4] * (args.num_gpus + 1)
-                    model_state[0] = 2
+                        sampler.sample(root_nodes, ts)
+                    ret = sampler.get_ret()
+                    # time_sample += ret[0].sample_time()
+                if gnn_param['arch'] != 'identity':
+                    mfgs = to_dgl_blocks(
+                        ret, sample_param['history'], cuda=False)
+                else:
+                    mfgs = node_to_dgl_blocks(root_nodes, ts, cuda=False)
+                sample_time_end = time.time()
+                time_sample += sample_time_end - sample_time_start
+                multi_mfgs.append(mfgs)
+                multi_root.append(root_nodes)
+                multi_ts.append(ts)
+                multi_eid.append(rows['Unnamed: 0'].values)
+                if mailbox is not None and memory_param['deliver_to'] == 'neighbors':
+                    multi_block.append(to_dgl_blocks(
+                        ret, sample_param['history'], reverse=True, cuda=False)[0][0])
+                if len(multi_mfgs) == args.num_gpus:
+                    model_state = [0] * (args.num_gpus + 1)
                     my_model_state = [None]
                     torch.distributed.scatter_object_list(
                         my_model_state, model_state, src=args.num_gpus)
-                    # for memory based models, testing after validation is faster
-                    # tap, tauc = eval('test')
+                    multi_mfgs.append(None)
+                    my_mfgs = [None]
+                    torch.distributed.scatter_object_list(
+                        my_mfgs, multi_mfgs, src=args.num_gpus)
+                    if mailbox is not None:
+                        multi_root.append(None)
+                        multi_ts.append(None)
+                        multi_eid.append(None)
+                        my_root = [None]
+                        my_ts = [None]
+                        my_eid = [None]
+                        torch.distributed.scatter_object_list(
+                            my_root, multi_root, src=args.num_gpus)
+                        torch.distributed.scatter_object_list(
+                            my_ts, multi_ts, src=args.num_gpus)
+                        torch.distributed.scatter_object_list(
+                            my_eid, multi_eid, src=args.num_gpus)
+                        if memory_param['deliver_to'] == 'neighbors':
+                            multi_block.append(None)
+                            my_block = [None]
+                            torch.distributed.scatter_object_list(
+                                my_block, multi_block, src=args.num_gpus)
+                    multi_mfgs = list()
+                    multi_root = list()
+                    multi_ts = list()
+                    multi_eid = list()
+                    multi_block = list()
+                # pbar.update(1)
+                time_tot += time.time() - t_tot_s
+            print('Training time:', time_tot)
+            model_state = [5] * (args.num_gpus + 1)
+            my_model_state = [None]
+            torch.distributed.scatter_object_list(
+                my_model_state, model_state, src=args.num_gpus)
+            gathered_loss = [None] * (args.num_gpus + 1)
+            torch.distributed.gather_object(
+                float(0), gathered_loss, dst=args.num_gpus)
+            total_loss = np.sum(np.array(gathered_loss) *
+                                train_param['batch_size'])
+            ap, auc = eval('val')
+            if ap > best_ap:
+                best_e = e
+                best_ap = ap
+                model_state = [4] * (args.num_gpus + 1)
+                model_state[0] = 2
+                my_model_state = [None]
+                torch.distributed.scatter_object_list(
+                    my_model_state, model_state, src=args.num_gpus)
+                # for memory based models, testing after validation is faster
+                # tap, tauc = eval('test')
             print('\ttrain loss:{:.4f}  val ap:{:4f}  val auc:{:4f}'.format(
                 total_loss, ap, auc))
             if phase1:
@@ -845,6 +845,8 @@ else:
         phase2_end_time = time.time()
         total_phase2_train_time += phase2_end_time - phase2_start_time
         total_train_time += phase2_end_time - phase2_start_time
+        print("current total time: {}".format(
+            total_train_time + total_build_graph_time))
     print("total_build_graph_time: {}".format(total_build_graph_time))
     print("total_phase1_time: {}".format(total_phase1_train_time))
     print("total_phase2_time: {}".format(total_phase2_train_time))
