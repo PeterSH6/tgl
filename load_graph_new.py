@@ -20,13 +20,13 @@ def load_graph_cpp(dataset_name: str, end_id_exclude: float):
     start_time = time.time()
 
     # df = pd.read_csv('/data/tgl/{}/edges.csv'.format(dataset_name))  # LINUX
-    df = pd.read_csv(
+    full_df = pd.read_csv(
         '/home/ubuntu/data/{}/edges.csv'.format(dataset_name))  # AWS
 
-    df_len = len(df)
+    df_len = len(full_df)
     end_id_exclude = int(end_id_exclude * df_len)
     # slice
-    df = df[:end_id_exclude]
+    df = full_df[:end_id_exclude]
 
     # df.rename(columns={'Unnamed: 0': 'eid'}, inplace=True)
 
@@ -73,7 +73,7 @@ def load_graph_cpp(dataset_name: str, end_id_exclude: float):
     end_time = time.time()
     print('Total Load Graph Time is {}'.format(end_time - start_time))
 
-    return ext_full_indptr, ext_full_indices, ext_full_ts, ext_full_eid, df
+    return ext_full_indptr, ext_full_indices, ext_full_ts, ext_full_eid, df, full_df
 
 
 def load_graph_python(dataset_name, end_id_exclude):

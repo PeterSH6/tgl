@@ -97,11 +97,10 @@ torch.distributed.broadcast_object_list(path_saver, src=0)
 path_saver = path_saver[0]
 
 
-def main(percent):
-
+def build_graph(percent):
     build_graph_start = time.time()
     if args.local_rank == args.num_gpus:
-        g_indptr, g_indices, g_ts, g_eid, df = load_graph_cpp(
+        g_indptr, g_indices, g_ts, g_eid, df, full_df = load_graph_cpp(
             args.data, percent)
         num_nodes = [g_indptr.shape[0] - 1]
         # g, df = load_graph(args.data)
@@ -113,8 +112,11 @@ def main(percent):
     num_nodes = num_nodes[0]
 
     build_graph_end = time.time()
-    print("build_graph_time: {}".format(build_graph_end - build_graph_start))
+    if args.local_rank == 0:
+        print("build_graph_time: {}".format(
+            build_graph_end - build_graph_start))
 
+    # TODO: memory only need to made once.
     mailbox = None
     if memory_param['type'] != 'none':
         if args.local_rank == 0:
@@ -154,72 +156,108 @@ def main(percent):
         mailbox = MailBox(memory_param, num_nodes,
                           dim_feats[4], node_memory, node_memory_ts, mails, mail_ts, next_mail_pos, update_mail_pos)
 
-    class DataPipelineThread(threading.Thread):
+    if args.local_rank == args.num_gpus:
+        return g_indptr, g_indices, g_ts, g_eid, df, full_df, mailbox
+    else:
+        return mailbox
 
-        def __init__(self, my_mfgs, my_root, my_ts, my_eid, my_block, stream):
-            super(DataPipelineThread, self).__init__()
-            self.my_mfgs = my_mfgs
-            self.my_root = my_root
-            self.my_ts = my_ts
-            self.my_eid = my_eid
-            self.my_block = my_block
-            self.stream = stream
-            self.mfgs = None
-            self.root = None
-            self.ts = None
-            self.eid = None
-            self.block = None
 
-        def run(self):
-            with torch.cuda.stream(self.stream):
-                # print(args.local_rank, 'start thread')
-                nids, eids = get_ids(self.my_mfgs[0], node_feats, edge_feats)
-                mfgs = mfgs_to_cuda(self.my_mfgs[0])
-                prepare_input(mfgs, node_feats, edge_feats, pinned=True, nfeat_buffs=pinned_nfeat_buffs,
-                              efeat_buffs=pinned_efeat_buffs, nids=nids, eids=eids)
-                if mailbox is not None:
-                    mailbox.prep_input_mails(mfgs[0], use_pinned_buffers=False)
-                self.mfgs = mfgs
-                self.root = self.my_root[0]
-                self.ts = self.my_ts[0]
-                self.eid = self.my_eid[0]
-                # if memory_param['deliver_to'] == 'neighbors':
-                #     self.block = self.my_block[0]
-                # print(args.local_rank, 'finished')
+# first time build the mailbox using whole grph
+if args.local_rank == args.num_gpus:
+    _, _, _, _, _, _, mailbox = build_graph(1)
+else:
+    mailbox = build_graph(1)
 
-        def get_stream(self):
-            return self.stream
+model = None
+optimizer = None
+if args.local_rank < args.num_gpus:
+    # GPU worker process
+    model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
+                         memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
+    # find_unused_parameters = True if sample_param['history'] > 1 else False
+    find_unused_parameters = True
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
+        args.local_rank], process_group=nccl_group, output_device=args.local_rank, find_unused_parameters=find_unused_parameters)
+    creterion = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
+    pinned_nfeat_buffs, pinned_efeat_buffs = get_pinned_buffers(
+        sample_param, train_param['batch_size'], node_feats, edge_feats)
+    if mailbox is not None:
+        mailbox.allocate_pinned_memory_buffers(
+            sample_param, train_param['batch_size'])
 
-        def get_mfgs(self):
-            return self.mfgs
 
-        def get_root(self):
-            return self.root
+class DataPipelineThread(threading.Thread):
 
-        def get_ts(self):
-            return self.ts
+    def __init__(self, my_mfgs, my_root, my_ts, my_eid, my_block, stream):
+        super(DataPipelineThread, self).__init__()
+        self.my_mfgs = my_mfgs
+        self.my_root = my_root
+        self.my_ts = my_ts
+        self.my_eid = my_eid
+        self.my_block = my_block
+        self.stream = stream
+        self.mfgs = None
+        self.root = None
+        self.ts = None
+        self.eid = None
+        self.block = None
 
-        def get_eid(self):
-            return self.eid
+    def run(self):
+        with torch.cuda.stream(self.stream):
+            # print(args.local_rank, 'start thread')
+            nids, eids = get_ids(self.my_mfgs[0], node_feats, edge_feats)
+            mfgs = mfgs_to_cuda(self.my_mfgs[0])
+            prepare_input(mfgs, node_feats, edge_feats, pinned=True, nfeat_buffs=pinned_nfeat_buffs,
+                          efeat_buffs=pinned_efeat_buffs, nids=nids, eids=eids)
+            if mailbox is not None:
+                mailbox.prep_input_mails(mfgs[0], use_pinned_buffers=False)
+            self.mfgs = mfgs
+            self.root = self.my_root[0]
+            self.ts = self.my_ts[0]
+            self.eid = self.my_eid[0]
+            # if memory_param['deliver_to'] == 'neighbors':
+            #     self.block = self.my_block[0]
+            # print(args.local_rank, 'finished')
 
-        def get_block(self):
-            return self.block
+    def get_stream(self):
+        return self.stream
+
+    def get_mfgs(self):
+        return self.mfgs
+
+    def get_root(self):
+        return self.root
+
+    def get_ts(self):
+        return self.ts
+
+    def get_eid(self):
+        return self.eid
+
+    def get_block(self):
+        return self.block
+
+
+def main(percent, current_start, phase1, model, optimizer, mailbox):
+    build_graph_start = time.time()
+    if args.local_rank == args.num_gpus:
+        g_indptr, g_indices, g_ts, g_eid, df, full_df = load_graph_cpp(
+            args.data, percent)
+        num_nodes = [g_indptr.shape[0] - 1]
+        # g, df = load_graph(args.data)
+        # num_nodes = [g['indptr'].shape[0] - 1]
+    else:
+        num_nodes = [None]
+    torch.distributed.barrier()
+    torch.distributed.broadcast_object_list(num_nodes, src=args.num_gpus)
+    num_nodes = num_nodes[0]
+
+    build_graph_end = time.time()
+    print("build_graph_time: {}".format(build_graph_end - build_graph_start))
 
     if args.local_rank < args.num_gpus:
         # GPU worker process
-        model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
-                             memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
-        # find_unused_parameters = True if sample_param['history'] > 1 else False
-        find_unused_parameters = True
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
-            args.local_rank], process_group=nccl_group, output_device=args.local_rank, find_unused_parameters=find_unused_parameters)
-        creterion = torch.nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
-        pinned_nfeat_buffs, pinned_efeat_buffs = get_pinned_buffers(
-            sample_param, train_param['batch_size'], node_feats, edge_feats)
-        if mailbox is not None:
-            mailbox.allocate_pinned_memory_buffers(
-                sample_param, train_param['batch_size'])
         tot_loss = 0
         prev_thread = None
         while True:
@@ -228,7 +266,7 @@ def main(percent):
             torch.distributed.scatter_object_list(
                 my_model_state, model_state, src=args.num_gpus)
             if my_model_state[0] == -1:
-                break
+                return model, mailbox
             elif my_model_state[0] == 4:
                 continue
             elif my_model_state[0] == 2:
@@ -412,47 +450,54 @@ def main(percent):
                         float(auc), None, dst=args.num_gpus)
     else:
         # hosting process
-        train_edge_end = df[df['ext_roll'].gt(0)].index[0]
-        val_edge_end = df[df['ext_roll'].gt(1)].index[0]
+        curr_start_index = int(len(full_df) * current_start)
+        curr_end_index = int(len(full_df) * percent)
+        curr_len = curr_end_index - curr_start_index
+        train_len = int(curr_len * 0.9)
+        val_start_index = curr_start_index + train_len
+        # train_edge_end = df[df['ext_roll'].gt(0)].index[0]
+        # val_edge_end = df[df['ext_roll'].gt(1)].index[0]
         sampler = None
         if not ('no_sample' in sample_param and sample_param['no_sample']):
             # sampler = ParallelSampler(g['indptr'], g['indices'], g['eid'], g['ts'].astype(np.float32),
             #                           sample_param['num_thread'], 1, sample_param['layer'], sample_param['neighbor'],
             #                           sample_param['strategy'] == 'recent', sample_param['prop_time'],
             #                           sample_param['history'], float(sample_param['duration']))
-            sampler = ParallelSampler(g_indptr, g_indices, g_eid, g_ts.astype(np.float32),
+            sampler = ParallelSampler(g_indptr, g_indices, g_eid, g_ts.astype(np.float64),
                                       sample_param['num_thread'], 1, sample_param['layer'], sample_param['neighbor'],
                                       sample_param['strategy'] == 'recent', sample_param['prop_time'],
                                       sample_param['history'], float(sample_param['duration']))
         # neg_link_sampler = NegLinkSampler(g['indptr'].shape[0] - 1)
         train_neg_link_sampler = RandEdgeSampler(
-            df[:train_edge_end]['src'].values, df[:train_edge_end]['dst'].values)
+            full_df[:val_start_index]['src'].values, full_df[:val_start_index]['dst'].values)
         val_neg_link_sampler = RandEdgeSampler(
             df['src'].values, df['dst'].values)
 
         def eval(mode='val'):
             if mode == 'val':
-                eval_df = df[train_edge_end:val_edge_end]
+                eval_df = df[val_start_index:curr_end_index]
             elif mode == 'test':
                 eval_df = df[val_edge_end:]
             elif mode == 'train':
-                eval_df = df[:train_edge_end]
+                eval_df = df[curr_start_index:val_start_index]
             ap_tot = list()
             auc_tot = list()
             train_param['batch_size'] = orig_batch_size
             itr_tot = max(
                 len(eval_df) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus
-            train_param['batch_size'] = math.ceil(len(eval_df) / itr_tot)
+            # train_param['batch_size'] = math.ceil(len(eval_df) / itr_tot)
             multi_mfgs = list()
             multi_root = list()
             multi_ts = list()
             multi_eid = list()
             multi_block = list()
+            eval_df = eval_df.reset_index()
             for _, rows in eval_df.groupby(eval_df.index // train_param['batch_size']):
+                # for _, rows in eval_df.groupby(eval_df.index // train_param['batch_size']):
                 root_nodes = np.concatenate(
-                    [rows.src.values, rows.dst.values, val_neg_link_sampler.sample(len(rows))]).astype(np.int32)
+                    [rows.src, rows.dst, val_neg_link_sampler.sample(len(rows))]).astype(np.int32)
                 ts = np.concatenate(
-                    [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
+                    [rows.time, rows.time, rows.time]).astype(np.float32)
                 if sampler is not None:
                     if 'no_neg' in sample_param and sample_param['no_neg']:
                         pos_root_end = root_nodes.shape[0] * 2 // 3
@@ -473,6 +518,7 @@ def main(percent):
                 if mailbox is not None and memory_param['deliver_to'] == 'neighbors':
                     multi_block.append(to_dgl_blocks(
                         ret, sample_param['history'], reverse=True, cuda=False)[0][0])
+                # only when it can make use of all gpus will it have a ap
                 if len(multi_mfgs) == args.num_gpus:
                     model_state = [1] * (args.num_gpus + 1)
                     my_model_state = [None]
@@ -535,8 +581,8 @@ def main(percent):
                 mailbox.reset()
             # training
             train_param['batch_size'] = orig_batch_size
-            itr_tot = train_edge_end // train_param['batch_size'] // args.num_gpus * args.num_gpus
-            train_param['batch_size'] = math.ceil(train_edge_end / itr_tot)
+            itr_tot = train_len // train_param['batch_size'] // args.num_gpus * args.num_gpus
+            # train_param['batch_size'] = math.ceil(train_len / itr_tot)
             multi_mfgs = list()
             multi_root = list()
             multi_ts = list()
@@ -544,35 +590,38 @@ def main(percent):
             multi_block = list()
             group_indexes = list()
             group_indexes.append(
-                np.array(df[:train_edge_end].index // train_param['batch_size']))
-            if 'reorder' in train_param:
-                # random chunk shceduling
-                reorder = train_param['reorder']
-                group_idx = list()
-                for i in range(reorder):
-                    group_idx += list(range(0 - i, reorder - i))
-                group_idx = np.repeat(np.array(group_idx),
-                                      train_param['batch_size'] // reorder)
-                group_idx = np.tile(group_idx, train_edge_end //
-                                    train_param['batch_size'] + 1)[:train_edge_end]
-                group_indexes.append(group_indexes[0] + group_idx)
-                base_idx = group_indexes[0]
-                for i in range(1, train_param['reorder']):
-                    additional_idx = np.zeros(
-                        train_param['batch_size'] // train_param['reorder'] * i) - 1
-                    group_indexes.append(np.concatenate(
-                        [additional_idx, base_idx])[:base_idx.shape[0]])
+                np.arange(curr_start_index, curr_end_index) // train_param['batch_size'])
+            # if 'reorder' in train_param:
+            #     # random chunk shceduling
+            #     reorder = train_param['reorder']
+            #     group_idx = list()
+            #     for i in range(reorder):
+            #         group_idx += list(range(0 - i, reorder - i))
+            #     group_idx = np.repeat(np.array(group_idx),
+            #                           train_param['batch_size'] // reorder)
+            #     group_idx = np.tile(group_idx, train_edge_end //
+            #                         train_param['batch_size'] + 1)[:train_edge_end]
+            #     group_indexes.append(group_indexes[0] + group_idx)
+            #     base_idx = group_indexes[0]
+            #     for i in range(1, train_param['reorder']):
+            #         additional_idx = np.zeros(
+            #             train_param['batch_size'] // train_param['reorder'] * i) - 1
+            #         group_indexes.append(np.concatenate(
+            #             [additional_idx, base_idx])[:base_idx.shape[0]])
 
             total_samples = 0
             ite = 0
-            with tqdm(total=itr_tot + max((val_edge_end - train_edge_end) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus) as pbar:
-                for _, rows in df[:train_edge_end].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
+            curr_df = full_df[curr_start_index:val_start_index]
+            curr_df = curr_df.reset_index()
+            with tqdm(total=itr_tot + max((curr_end_index - val_start_index) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus) as pbar:
+                # for _, rows in df[curr_start_index:val_start_index].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
+                for _, rows in curr_df.groupby(curr_df.index // train_param['batch_size']):
                     ite += 1
                     t_tot_s = time.time()
                     root_nodes = np.concatenate(
-                        [rows.src.values, rows.dst.values, train_neg_link_sampler.sample(len(rows))]).astype(np.int32)
+                        [rows.src, rows.dst, train_neg_link_sampler.sample(len(rows))]).astype(np.int32)
                     ts = np.concatenate(
-                        [rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
+                        [rows.time, rows.time, rows.time]).astype(np.float32)
                     total_samples += len(root_nodes)
                     sample_time_start = time.time()
                     if sampler is not None:
@@ -652,7 +701,7 @@ def main(percent):
                     torch.distributed.scatter_object_list(
                         my_model_state, model_state, src=args.num_gpus)
                     # for memory based models, testing after validation is faster
-                    tap, tauc = eval('test')
+                    # tap, tauc = eval('test')
             print('\ttrain loss:{:.4f}  val ap:{:4f}  val auc:{:4f}'.format(
                 total_loss, ap, auc))
             print('\ttotal time:{:.2f}s sample time:{:.2f}s'.format(
@@ -662,8 +711,8 @@ def main(percent):
             print('\ttotal iterations: {}; avg sample time: {}'.format(
                 ite, time_sample / ite))
 
-        print('Best model at epoch {}.'.format(best_e))
-        print('\ttest ap:{:4f}  test auc:{:4f}'.format(tap, tauc))
+        # print('Best model at epoch {}.'.format(best_e))
+        # print('\ttest ap:{:4f}  test auc:{:4f}'.format(tap, tauc))
 
         # let all process exit
         model_state = [-1] * (args.num_gpus + 1)
@@ -673,5 +722,43 @@ def main(percent):
 
 
 # Phase1
-phase1_percent = 1
-main(phase1_percent)
+# for i in range(10):
+#     if args.local_rank < args.num_gpus:
+#         model, mailbox = main(1, 0, phase1=True,
+#                               model=model, optimizer=optimizer, mailbox=mailbox)
+#         torch.distributed.barrier()
+#     else:
+#         main(1, 0, phase1=True,
+#              model=model, optimizer=optimizer, mailbox=mailbox)
+#         torch.distributed.barrier()
+if args.local_rank < args.num_gpus:
+    phase1_percent = 0.3
+    curr_start = 0
+    model, mailbox = main(phase1_percent, curr_start, phase1=True,
+                          model=model, optimizer=optimizer, mailbox=mailbox)
+    torch.distributed.barrier()
+    retrain_num = 3
+    phase2_percent = 1 - phase1_percent
+    incremental_percent = phase2_percent / retrain_num
+    for i in range(retrain_num):
+        phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
+        curr_start = phase1_percent + i * incremental_percent
+        optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
+        main(phase2_all_percent, curr_start, phase1=False,
+             model=model, optimizer=optimizer, mailbox=mailbox)
+        torch.distributed.barrier()
+else:
+    phase1_percent = 0.3
+    curr_start = 0
+    main(phase1_percent, curr_start, phase1=True,
+         model=model, optimizer=optimizer, mailbox=mailbox)
+    torch.distributed.barrier()
+    retrain_num = 3
+    phase2_percent = 1 - phase1_percent
+    incremental_percent = phase2_percent / retrain_num
+    for i in range(retrain_num):
+        phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
+        curr_start = phase1_percent + i * incremental_percent
+        main(phase2_all_percent, curr_start, phase1=False,
+             model=model, optimizer=optimizer, mailbox=mailbox)
+        torch.distributed.barrier()
