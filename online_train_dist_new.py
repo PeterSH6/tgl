@@ -128,10 +128,10 @@ def build_graph(percent):
 
     build_graph_end = time.time()
     if args.local_rank == args.num_gpus:
-        print("build_graph_time: {}".format(
+        print("first time (percent=1) build_graph_time: {}".format(
             build_graph_end - build_graph_start))
-    global total_build_graph_time
-    total_build_graph_time += build_graph_end - build_graph_start
+        # global total_build_graph_time
+        # total_build_graph_time += build_graph_end - build_graph_start
 
     # TODO: memory only need to made once.
     mailbox = None
@@ -274,8 +274,9 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
     if args.local_rank == args.num_gpus:
         print("build_graph_time: {}".format(
             build_graph_end - build_graph_start))
-    global total_build_graph_time
-    total_build_graph_time += build_graph_end - build_graph_start
+        global total_build_graph_time
+        total_build_graph_time += build_graph_end - build_graph_start
+        curr_build_graph_time = build_graph_end - build_graph_start
 
     if args.local_rank < args.num_gpus:
         # GPU worker process
@@ -608,6 +609,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
             total_train_time -= new_data_eval_time
             global total_phase2_train_time
             total_phase2_train_time -= new_data_eval_time
+            print('new data evl time: {}'.format(new_data_eval_time))
 
         best_ap = 0
         best_e = 0
@@ -771,7 +773,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
         torch.distributed.scatter_object_list(
             my_model_state, model_state, src=args.num_gpus)
 
-        return time_tot
+        return curr_build_graph_time
 
 
 # Phase1
@@ -786,7 +788,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
 #         torch.distributed.barrier()
 phase1_percent = 0.3
 curr_start = 0
-retrain_num = 100
+retrain_num = 3
 if args.local_rank < args.num_gpus:
     phase1_start_time = time.time()
     model, mailbox = main(phase1_percent, curr_start, phase1=True,
@@ -794,8 +796,9 @@ if args.local_rank < args.num_gpus:
     torch.distributed.barrier()
     phase1_end_time = time.time()
     # print('phase1 time: {}'.format(phase1_end_time - phase1_start_time))
-    total_phase1_train_time += phase1_end_time - phase1_start_time
-    total_train_time += phase1_end_time - phase1_start_time
+    # total_phase1_train_time += phase1_end_time - phase1_start_time
+    # total_train_time += phase1_end_time - phase1_start_time
+    torch.save(model.state_dict(), 'TGN_GDELT.pt')
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
     for i in range(retrain_num):
@@ -807,8 +810,8 @@ if args.local_rank < args.num_gpus:
              model=model, optimizer=optimizer, mailbox=mailbox)
         torch.distributed.barrier()
         phase2_end_time = time.time()
-        total_phase2_train_time += phase2_end_time - phase2_start_time
-        total_train_time += phase2_end_time - phase2_start_time
+        # total_phase2_train_time += phase2_end_time - phase2_start_time
+        # total_train_time += phase2_end_time - phase2_start_time
     # print("total_build_graph_time: {}".format(total_build_graph_time))
     # print("total_phase1_time: {}".format(total_phase1_train_time))
     # print("total_phase2_time: {}".format(total_phase2_train_time))
@@ -820,13 +823,16 @@ else:
     with open(auc_file, "a") as f_phase2:
         f_phase2.write("phase1\n")
     phase1_start_time = time.time()
-    main(phase1_percent, curr_start, phase1=True,
-         model=model, optimizer=optimizer, mailbox=mailbox)
+    curr_build_graph_time = main(phase1_percent, curr_start, phase1=True,
+                                 model=model, optimizer=optimizer, mailbox=mailbox)
+    print('phase 1 build_graph time: {}'.format(curr_build_graph_time))
     torch.distributed.barrier()
     phase1_end_time = time.time()
-    print('phase1 time: {}'.format(phase1_end_time - phase1_start_time))
-    total_phase1_train_time += phase1_end_time - phase1_start_time
-    total_train_time += phase1_end_time - phase1_start_time
+    print('phase1 time: {}'.format(phase1_end_time -
+          phase1_start_time - curr_build_graph_time))
+    total_phase1_train_time += phase1_end_time - \
+        phase1_start_time - curr_build_graph_time
+    total_train_time += phase1_end_time - phase1_start_time - curr_build_graph_time
     print("---------------phase1 done--------------")
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
@@ -839,12 +845,17 @@ else:
         phase2_start_time = time.time()
         phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
         curr_start = phase1_percent + i * incremental_percent
-        main(phase2_all_percent, curr_start, phase1=False,
-             model=model, optimizer=optimizer, mailbox=mailbox)
+        curr_build_graph_time = main(phase2_all_percent, curr_start, phase1=False,
+                                     model=model, optimizer=optimizer, mailbox=mailbox)
         torch.distributed.barrier()
         phase2_end_time = time.time()
-        total_phase2_train_time += phase2_end_time - phase2_start_time
-        total_train_time += phase2_end_time - phase2_start_time
+        total_phase2_train_time += phase2_end_time - \
+            phase2_start_time - curr_build_graph_time
+        total_train_time += phase2_end_time - phase2_start_time - curr_build_graph_time
+        print("{}th build graph time: {}".format(
+            i+1, curr_build_graph_time))
+        print("{}th retrain time: {}".format(
+            i+1, phase2_end_time - phase2_start_time - curr_build_graph_time))
         print("current total time: {}".format(
             total_train_time + total_build_graph_time))
     print("total_build_graph_time: {}".format(total_build_graph_time))
