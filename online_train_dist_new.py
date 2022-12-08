@@ -1,3 +1,4 @@
+import logging
 from load_graph_new import load_graph_cpp
 from utils import *
 from sampler import *
@@ -34,6 +35,8 @@ else:
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['OMP_NUM_THREADS'] = str(args.omp_num_threads)
 os.environ['MKL_NUM_THREADS'] = str(args.omp_num_threads)
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 def set_seed(seed):
@@ -96,6 +99,15 @@ else:
 torch.distributed.broadcast_object_list(path_saver, src=0)
 path_saver = path_saver[0]
 
+global total_build_graph_time
+global total_train_time
+global total_phase1_train_time
+global total_phase2_train_time
+total_build_graph_time = 0
+total_train_time = 0
+total_phase1_train_time = 0
+total_phase2_train_time = 0
+
 
 def build_graph(percent):
     build_graph_start = time.time()
@@ -112,9 +124,11 @@ def build_graph(percent):
     num_nodes = num_nodes[0]
 
     build_graph_end = time.time()
-    if args.local_rank == 0:
+    if args.local_rank == args.num_gpus:
         print("build_graph_time: {}".format(
             build_graph_end - build_graph_start))
+    global total_build_graph_time
+    total_build_graph_time += build_graph_end - build_graph_start
 
     # TODO: memory only need to made once.
     mailbox = None
@@ -254,7 +268,11 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
     num_nodes = num_nodes[0]
 
     build_graph_end = time.time()
-    print("build_graph_time: {}".format(build_graph_end - build_graph_start))
+    if args.local_rank == args.num_gpus:
+        print("build_graph_time: {}".format(
+            build_graph_end - build_graph_start))
+    global total_build_graph_time
+    total_build_graph_time += build_graph_end - build_graph_start
 
     if args.local_rank < args.num_gpus:
         # GPU worker process
@@ -450,9 +468,13 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
                         float(auc), None, dst=args.num_gpus)
     else:
         # hosting process
+        # TODO: replay ratio = 0
         curr_start_index = int(len(full_df) * current_start)
         curr_end_index = int(len(full_df) * percent)
         curr_len = curr_end_index - curr_start_index
+        print("incremental step: {}".format(curr_len))
+        print("current start index: {}".format(curr_start_index))
+        print("current end index: {}".format(curr_end_index))
         train_len = int(curr_len * 0.9)
         val_start_index = curr_start_index + train_len
         # train_edge_end = df[df['ext_roll'].gt(0)].index[0]
@@ -473,18 +495,20 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
         val_neg_link_sampler = RandEdgeSampler(
             df['src'].values, df['dst'].values)
 
-        def eval(mode='val'):
-            if mode == 'val':
-                eval_df = df[val_start_index:curr_end_index]
-            elif mode == 'test':
-                eval_df = df[val_edge_end:]
-            elif mode == 'train':
-                eval_df = df[curr_start_index:val_start_index]
+        def eval(mode='val', eval_df=None, only_eval=False):
+            if eval_df is None:
+                if mode == 'val':
+                    eval_df = df[val_start_index:curr_end_index]
+                elif mode == 'test':
+                    eval_df = df[val_edge_end:]
+                elif mode == 'train':
+                    eval_df = df[curr_start_index:val_start_index]
             ap_tot = list()
             auc_tot = list()
-            train_param['batch_size'] = orig_batch_size
+            # train_param['batch_size'] = orig_batch_size
+            eval_batch_size = 600
             itr_tot = max(
-                len(eval_df) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus
+                len(eval_df) // eval_batch_size // args.num_gpus, 1) * args.num_gpus
             # train_param['batch_size'] = math.ceil(len(eval_df) / itr_tot)
             multi_mfgs = list()
             multi_root = list()
@@ -492,7 +516,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
             multi_eid = list()
             multi_block = list()
             eval_df = eval_df.reset_index()
-            for _, rows in eval_df.groupby(eval_df.index // train_param['batch_size']):
+            for _, rows in eval_df.groupby(eval_df.index // eval_batch_size):
                 # for _, rows in eval_df.groupby(eval_df.index // train_param['batch_size']):
                 root_nodes = np.concatenate(
                     [rows.src, rows.dst, val_neg_link_sampler.sample(len(rows))]).astype(np.int32)
@@ -559,10 +583,24 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
                     multi_ts = list()
                     multi_eid = list()
                     multi_block = list()
-                pbar.update(1)
+                if not only_eval:
+                    pbar.update(1)
             ap = float(torch.tensor(ap_tot).mean())
             auc = float(torch.tensor(auc_tot).mean())
             return ap, auc
+
+        if not phase1:
+            new_data_eval_start = time.time()
+            ap, auc = eval(mode='val',
+                           eval_df=full_df.iloc[curr_start_index:curr_end_index], only_eval=True)
+            print(
+                "evaluation using new data ap: {:.4f} auc: {:.4f}".format(ap, auc))
+            new_data_eval_end = time.time()
+            new_data_eval_time = new_data_eval_end - new_data_eval_start
+            global total_train_time
+            total_train_time -= new_data_eval_time
+            global total_phase2_train_time
+            total_phase2_train_time -= new_data_eval_time
 
         best_ap = 0
         best_e = 0
@@ -574,6 +612,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
         for e in range(train_param['epoch']):
             print('Epoch {:d}:'.format(e))
             time_sample = 0
+            # we can use time_tot because only one epoch
             time_tot = 0
             if sampler is not None:
                 sampler.reset()
@@ -720,6 +759,8 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
         torch.distributed.scatter_object_list(
             my_model_state, model_state, src=args.num_gpus)
 
+        return time_tot
+
 
 # Phase1
 # for i in range(10):
@@ -731,34 +772,62 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
 #         main(1, 0, phase1=True,
 #              model=model, optimizer=optimizer, mailbox=mailbox)
 #         torch.distributed.barrier()
+phase1_percent = 0.3
+curr_start = 0
+retrain_num = 3
 if args.local_rank < args.num_gpus:
-    phase1_percent = 0.3
-    curr_start = 0
+    phase1_start_time = time.time()
     model, mailbox = main(phase1_percent, curr_start, phase1=True,
                           model=model, optimizer=optimizer, mailbox=mailbox)
     torch.distributed.barrier()
-    retrain_num = 3
+    phase1_end_time = time.time()
+    # print('phase1 time: {}'.format(phase1_end_time - phase1_start_time))
+    total_phase1_train_time += phase1_end_time - phase1_start_time
+    total_train_time += phase1_end_time - phase1_start_time
+    print("---------------phase1 done--------------")
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
     for i in range(retrain_num):
+        phase2_start_time = time.time()
         phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
         curr_start = phase1_percent + i * incremental_percent
         optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
         main(phase2_all_percent, curr_start, phase1=False,
              model=model, optimizer=optimizer, mailbox=mailbox)
         torch.distributed.barrier()
+        phase2_end_time = time.time()
+        total_phase2_train_time += phase2_end_time - phase2_start_time
+        total_train_time += phase2_end_time - phase2_start_time
+    # print("total_build_graph_time: {}".format(total_build_graph_time))
+    # print("total_phase1_time: {}".format(total_phase1_train_time))
+    # print("total_phase2_time: {}".format(total_phase2_train_time))
+    # print("total_train_time: {}".format(total_train_time))
+    # print("total_time: {}".format(total_train_time + total_build_graph_time))
 else:
-    phase1_percent = 0.3
-    curr_start = 0
+    phase1_start_time = time.time()
     main(phase1_percent, curr_start, phase1=True,
          model=model, optimizer=optimizer, mailbox=mailbox)
     torch.distributed.barrier()
-    retrain_num = 3
+    phase1_end_time = time.time()
+    print('phase1 time: {}'.format(phase1_end_time - phase1_start_time))
+    total_phase1_train_time += phase1_end_time - phase1_start_time
+    total_train_time += phase1_end_time - phase1_start_time
+    print("---------------phase1 done--------------")
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
     for i in range(retrain_num):
+        phase2_start_time = time.time()
         phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
         curr_start = phase1_percent + i * incremental_percent
         main(phase2_all_percent, curr_start, phase1=False,
              model=model, optimizer=optimizer, mailbox=mailbox)
         torch.distributed.barrier()
+        phase2_end_time = time.time()
+        total_phase2_train_time += phase2_end_time - phase2_start_time
+        total_train_time += phase2_end_time - phase2_start_time
+    print("total_build_graph_time: {}".format(total_build_graph_time))
+    print("total_phase1_time: {}".format(total_phase1_train_time))
+    print("total_phase2_time: {}".format(total_phase2_train_time))
+    print("total_train_time: {}".format(total_train_time))
+    print("total_time: {}".format(
+        total_train_time + total_build_graph_time))

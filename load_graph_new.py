@@ -40,7 +40,7 @@ def load_graph_cpp(dataset_name: str, end_id_exclude: float):
     py_num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1
     py_num_edges = len(df)
 
-    print('num_nodes: ', py_num_nodes)
+    # print('num_nodes: ', py_num_nodes)
 
     result = gen_graph_multithread.run(
         df_eid,
@@ -71,7 +71,7 @@ def load_graph_cpp(dataset_name: str, end_id_exclude: float):
     ext_full_eid = convert_list_to_np(result[11], True)
 
     end_time = time.time()
-    print('Total Load Graph Time is {}'.format(end_time - start_time))
+    # print('Total Load Graph Time is {}'.format(end_time - start_time))
 
     return ext_full_indptr, ext_full_indices, ext_full_ts, ext_full_eid, df, full_df
 
@@ -86,7 +86,7 @@ def load_graph_python(dataset_name, end_id_exclude):
     df = df[:end_id_exclude]
 
     num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1
-    print('num_nodes: ', num_nodes)
+    # print('num_nodes: ', num_nodes)
 
     int_train_indptr = np.zeros(num_nodes + 1, dtype=np.int)
     int_train_indices = [[] for _ in range(num_nodes)]

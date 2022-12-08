@@ -389,8 +389,8 @@ std::vector<std::vector<double>> run(
 	auto read_ = system_clock::now();
 
     int num_nodes = py_num_nodes;
-    std::cout<< "the node number is: " << num_nodes << " ." << std::endl;
-    std::cout<< "the iteration number is: " << df.size() << " ." << std::endl;
+    // std::cout<< "the node number is: " << num_nodes << " ." << std::endl;
+    // std::cout<< "the iteration number is: " << df.size() << " ." << std::endl;
 
     if(num_nodes == -1 || num_nodes == 0) {
         // TODO: raise error
@@ -415,7 +415,7 @@ std::vector<std::vector<double>> run(
 
     auto build_end_ = system_clock::now();
 
-    std::cout<< "Build Graph Time by CPP multithread: " << get_chrono_duration(begin_, build_end_) << " seconds." << std::endl;
+    // std::cout<< "Build Graph Time by CPP multithread: " << get_chrono_duration(begin_, build_end_) << " seconds." << std::endl;
 
 
     // full logic start
@@ -428,13 +428,13 @@ std::vector<std::vector<double>> run(
         ext_full_indptr[i + 1] = ext_full_indptr[i] + ext_full_indices[i].size();
     }
 
-    printf("Chaining...\n");
+    // printf("Chaining...\n");
     // chain
     chain_simple(int_train_indices, int_train_ts, int_train_eid, int_train_chain);
     chain_simple(int_full_indices, int_full_ts, int_full_eid, int_full_chain);
     chain_simple(ext_full_indices, ext_full_ts, ext_full_eid, ext_full_chain);
 
-    printf("Sorting...\n");
+    // printf("Sorting...\n");
 
     // sort by ts_
     for(int i = 0; i < int_train_indptr.size() - 1; i++) {
@@ -445,7 +445,7 @@ std::vector<std::vector<double>> run(
 
     auto logic_finish_time_ = system_clock::now();
 
-    std::cout<< "TOTAL Graph Time by CPP multithread: " << get_chrono_duration(begin_, logic_finish_time_) << " seconds." << std::endl;
+    // std::cout<< "TOTAL Graph Time by CPP multithread: " << get_chrono_duration(begin_, logic_finish_time_) << " seconds." << std::endl;
 
     // print_ultimate_result();
 
