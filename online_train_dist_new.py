@@ -92,6 +92,8 @@ if args.local_rank > 0 and args.local_rank < args.num_gpus:
         edge_feats = get_shared_mem_array(
             'edge_feats', (dim_feats[3], dim_feats[4]), dtype=dim_feats[5])
 sample_param, memory_param, gnn_param, train_param = parse_config(args.config)
+if args.local_rank == args.num_gpus:
+    print(train_param)
 orig_batch_size = train_param['batch_size']
 if args.local_rank == 0:
     if not os.path.isdir('models'):
@@ -510,7 +512,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
             ap_tot = list()
             auc_tot = list()
             # train_param['batch_size'] = orig_batch_size
-            eval_batch_size = 600
+            eval_batch_size = 2000
             itr_tot = max(
                 len(eval_df) // eval_batch_size // args.num_gpus, 1) * args.num_gpus
             # train_param['batch_size'] = math.ceil(len(eval_df) / itr_tot)
@@ -739,7 +741,10 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
                 float(0), gathered_loss, dst=args.num_gpus)
             total_loss = np.sum(np.array(gathered_loss) *
                                 train_param['batch_size'])
+            eval_start = time.time()
             ap, auc = eval('val')
+            eval_end = time.time()
+            eval_time = eval_end - eval_start
             if ap > best_ap:
                 best_e = e
                 best_ap = ap
@@ -773,7 +778,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
         torch.distributed.scatter_object_list(
             my_model_state, model_state, src=args.num_gpus)
 
-        return curr_build_graph_time
+        return curr_build_graph_time, eval_time
 
 
 # Phase1
@@ -788,7 +793,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox):
 #         torch.distributed.barrier()
 phase1_percent = 0.3
 curr_start = 0
-retrain_num = 3
+retrain_num = 100
 if args.local_rank < args.num_gpus:
     phase1_start_time = time.time()
     model, mailbox = main(phase1_percent, curr_start, phase1=True,
@@ -823,9 +828,10 @@ else:
     with open(auc_file, "a") as f_phase2:
         f_phase2.write("phase1\n")
     phase1_start_time = time.time()
-    curr_build_graph_time = main(phase1_percent, curr_start, phase1=True,
-                                 model=model, optimizer=optimizer, mailbox=mailbox)
+    curr_build_graph_time, eval_time = main(phase1_percent, curr_start, phase1=True,
+                                            model=model, optimizer=optimizer, mailbox=mailbox)
     print('phase 1 build_graph time: {}'.format(curr_build_graph_time))
+    print('phase 1 eval time: {}'.format(eval_time))
     torch.distributed.barrier()
     phase1_end_time = time.time()
     print('phase1 time: {}'.format(phase1_end_time -
@@ -845,8 +851,8 @@ else:
         phase2_start_time = time.time()
         phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
         curr_start = phase1_percent + i * incremental_percent
-        curr_build_graph_time = main(phase2_all_percent, curr_start, phase1=False,
-                                     model=model, optimizer=optimizer, mailbox=mailbox)
+        curr_build_graph_time, eval_time = main(phase2_all_percent, curr_start, phase1=False,
+                                                model=model, optimizer=optimizer, mailbox=mailbox)
         torch.distributed.barrier()
         phase2_end_time = time.time()
         total_phase2_train_time += phase2_end_time - \
@@ -854,6 +860,7 @@ else:
         total_train_time += phase2_end_time - phase2_start_time - curr_build_graph_time
         print("{}th build graph time: {}".format(
             i+1, curr_build_graph_time))
+        print('phase 2 {}th eval time: {}'.format(i+1, eval_time))
         print("{}th retrain time: {}".format(
             i+1, phase2_end_time - phase2_start_time - curr_build_graph_time))
         print("current total time: {}".format(
