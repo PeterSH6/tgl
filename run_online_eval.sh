@@ -12,5 +12,5 @@ cmd="python -m torch.distributed.launch --nproc_per_node=$NPROC_PER_NODE \
     
 rm -rf /dev/shm/*
 echo $cmd
-exec $cmd > retrain-30%online-$MODEL-$DATA-$NPROC_PER_NODE-$NGPUS.log 2>&1
+exec $cmd > accu-retrain-30%online-$MODEL-$DATA-$NPROC_PER_NODE-$NGPUS.log 2>&1
 

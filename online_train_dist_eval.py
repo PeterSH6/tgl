@@ -27,19 +27,19 @@ parser.add_argument('--omp_num_threads', type=int, default=8)
 parser.add_argument("--local_rank", type=int, default=-1)
 args = parser.parse_args()
 
-print(args.local_rank)
+
 # set which GPU to use
-if args.local_rank < args.num_gpus:
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.local_rank)
-else:
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+# if args.local_rank < args.num_gpus:
+#     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.local_rank)
+# else:
+#     os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['OMP_NUM_THREADS'] = str(args.omp_num_threads)
 os.environ['MKL_NUM_THREADS'] = str(args.omp_num_threads)
 
 logging.basicConfig(level=logging.DEBUG)
 
-ap_file = "retrain_online_ap.txt"
-auc_file = "retrain_online_auc.txt"
+ap_file = "tgn_retrain_online_ap.txt"
+auc_file = "tgn_retrain_online_auc.txt"
 
 
 def set_seed(seed):
@@ -192,7 +192,7 @@ optimizer = None
 if args.local_rank < args.num_gpus:
     # GPU worker process
     model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
-                         memory_param, gnn_param, train_param).cuda()
+                         memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
     # find_unused_parameters = True if sample_param['history'] > 1 else False
     find_unused_parameters = True
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[
@@ -596,11 +596,13 @@ def main(percent, current_start, phase1, model, optimizer, mailbox, train_interv
             return ap, auc
 
         if not phase1:
-            eval_step = curr_len / train_interval
+            eval_step = curr_len // train_interval
             for i in range(train_interval):
                 new_data_eval_start = time.time()
                 eval_start_index = curr_start_index + i * eval_step
                 eval_end_index = curr_start_index + (i + 1) * eval_step
+                print("eval start: {} eval end: {}".format(
+                    eval_start_index, eval_end_index))
                 ap, auc = eval(mode='val',
                                eval_df=full_df.iloc[eval_start_index:eval_end_index], only_eval=True)
                 with open(ap_file, "a") as f_phase2:
@@ -808,7 +810,7 @@ if args.local_rank < args.num_gpus:
     # print('phase1 time: {}'.format(phase1_end_time - phase1_start_time))
     # total_phase1_train_time += phase1_end_time - phase1_start_time
     # total_train_time += phase1_end_time - phase1_start_time
-    torch.save(model.state_dict(), 'DySAT_GDELT.pt')
+    torch.save(model.state_dict(), 'TGN_GDELT.pt')
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
     for i in range(retrain_num):
@@ -857,7 +859,8 @@ else:
         phase2_all_percent = phase1_percent + (i + 1) * incremental_percent
         curr_start = phase1_percent + i * incremental_percent
         curr_build_graph_time, eval_time = main(phase2_all_percent, curr_start, phase1=False,
-                                                model=model, optimizer=optimizer, mailbox=mailbox)
+                                                model=model, optimizer=optimizer, mailbox=mailbox,
+                                                train_interval=train_interval)
         torch.distributed.barrier()
         phase2_end_time = time.time()
         total_phase2_train_time += phase2_end_time - \
