@@ -227,7 +227,7 @@ class DataPipelineThread(threading.Thread):
             # print(args.local_rank, 'start thread')
             nids, eids = get_ids(self.my_mfgs[0], node_feats, edge_feats)
             mfgs = mfgs_to_cuda(self.my_mfgs[0])
-            prepare_input(mfgs, node_feats, edge_feats, pinned=True, nfeat_buffs=pinned_nfeat_buffs,
+            prepare_input(mfgs, node_feats, edge_feats, pinned=False, nfeat_buffs=pinned_nfeat_buffs,
                           efeat_buffs=pinned_efeat_buffs, nids=nids, eids=eids)
             if mailbox is not None:
                 mailbox.prep_input_mails(mfgs[0], use_pinned_buffers=False)
@@ -423,7 +423,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox, train_interv
                 torch.distributed.scatter_object_list(
                     my_mfgs, multi_mfgs, src=args.num_gpus)
                 mfgs = mfgs_to_cuda(my_mfgs[0])
-                prepare_input(mfgs, node_feats, edge_feats, pinned=True,
+                prepare_input(mfgs, node_feats, edge_feats, pinned=False,
                               nfeat_buffs=pinned_nfeat_buffs, efeat_buffs=pinned_efeat_buffs)
                 model.eval()
                 with torch.no_grad():
@@ -824,7 +824,7 @@ phase1_percent = 0.3
 curr_start = 0
 retrain_num = 2
 train_interval = 50
-replay_ratio = 0.01
+replay_ratio = 0.02
 if args.local_rank < args.num_gpus:
     phase1_start_time = time.time()
     model, mailbox = main(phase1_percent, curr_start, phase1=True,
