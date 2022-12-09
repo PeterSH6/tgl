@@ -258,7 +258,7 @@ class DataPipelineThread(threading.Thread):
         return self.block
 
 
-def main(percent, current_start, phase1, model, optimizer, mailbox, train_interval=0):
+def main(percent, current_start, phase1, model, optimizer, mailbox, train_interval=0, replay_ratio=0):
     build_graph_start = time.time()
     if args.local_rank == args.num_gpus:
         g_indptr, g_indices, g_ts, g_eid, df, full_df = load_graph_cpp(
@@ -667,8 +667,31 @@ def main(percent, current_start, phase1, model, optimizer, mailbox, train_interv
 
             total_samples = 0
             ite = 0
-            curr_df = full_df[curr_start_index:val_start_index]
+            # TODO: do sampling here
+            num_replay = int(replay_ratio * curr_start_index)
+            print("num replay: {}".format(num_replay))
+            new_data_index = np.arange(
+                curr_start_index, curr_end_index)
+            if num_replay > 0:
+                weights = np.ones(int(curr_start_index)) / \
+                    curr_start_index
+                old_data_index = np.random.choice(
+                    curr_start_index, size=num_replay, p=weights, replace=False)
+                old_data_index.sort()
+                all_index = np.concatenate((old_data_index, new_data_index))
+            else:
+                all_index = new_data_index
+            phase2_train_len = int(len(all_index) * 0.9) + 1
+            train_index = all_index[:phase2_train_len]
+            val_index = all_index[phase2_train_len:]
+            # phase2_train_df = full_data.iloc[train_index.numpy()]
+            # phase2_val_df = full_data.iloc[val_index.numpy()]
+
+            curr_df = full_df.iloc[train_index]
             curr_df = curr_df.reset_index()
+            print("num current df: {}".format(len(curr_df)))
+            eval_df = full_df.iloc[val_index]
+            print("num current eval df: {}".format(len(eval_df)))
             # with tqdm(total=itr_tot + max((curr_end_index - val_start_index) // train_param['batch_size'] // args.num_gpus, 1) * args.num_gpus) as pbar:
             # for _, rows in df[curr_start_index:val_start_index].groupby(group_indexes[random.randint(0, len(group_indexes) - 1)]):
             for _, rows in curr_df.groupby(curr_df.index // train_param['batch_size']):
@@ -748,7 +771,7 @@ def main(percent, current_start, phase1, model, optimizer, mailbox, train_interv
             total_loss = np.sum(np.array(gathered_loss) *
                                 train_param['batch_size'])
             eval_start = time.time()
-            ap, auc = eval('val')
+            ap, auc = eval('val', eval_df=eval_df)
             eval_end = time.time()
             eval_time = eval_end - eval_start
             if ap > best_ap:
@@ -799,8 +822,9 @@ def main(percent, current_start, phase1, model, optimizer, mailbox, train_interv
 #         torch.distributed.barrier()
 phase1_percent = 0.3
 curr_start = 0
-retrain_num = 5
-train_interval = 20
+retrain_num = 2
+train_interval = 50
+replay_ratio = 0.02
 if args.local_rank < args.num_gpus:
     phase1_start_time = time.time()
     model, mailbox = main(phase1_percent, curr_start, phase1=True,
@@ -860,7 +884,7 @@ else:
         curr_start = phase1_percent + i * incremental_percent
         curr_build_graph_time, eval_time = main(phase2_all_percent, curr_start, phase1=False,
                                                 model=model, optimizer=optimizer, mailbox=mailbox,
-                                                train_interval=train_interval)
+                                                train_interval=train_interval, replay_ratio=replay_ratio)
         torch.distributed.barrier()
         phase2_end_time = time.time()
         total_phase2_train_time += phase2_end_time - \
