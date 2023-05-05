@@ -22,15 +22,15 @@ parser.add_argument('--seed', type=int, default=0, help='random seed to use')
 parser.add_argument('--num_gpus', type=int, default=4,
                     help='number of gpus to use')
 parser.add_argument('--omp_num_threads', type=int, default=8)
-parser.add_argument("--local_rank", type=int, default=-1)
+parser.add_argument("--local-rank", type=int, default=-1)
 args = parser.parse_args()
 
 print(args.local_rank)
 # set which GPU to use
-if args.local_rank < args.num_gpus:
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.local_rank)
-else:
-    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+# if args.local_rank < args.num_gpus:
+#     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.local_rank)
+# else:
+#     os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['OMP_NUM_THREADS'] = str(args.omp_num_threads)
 os.environ['MKL_NUM_THREADS'] = str(args.omp_num_threads)
 
@@ -51,6 +51,7 @@ nccl_group = torch.distributed.new_group(
 
 if args.local_rank == 0:
     _node_feats, _edge_feats = load_feat(args.data)
+    print(_node_feats, _edge_feats)
 dim_feats = [0, 0, 0, 0, 0, 0]
 if args.local_rank == 0:
     if _node_feats is not None:
@@ -81,9 +82,15 @@ if args.local_rank > 0 and args.local_rank < args.num_gpus:
     if os.path.exists('DATA/{}/node_features.pt'.format(args.data)):
         node_feats = get_shared_mem_array(
             'node_feats', (dim_feats[0], dim_feats[1]), dtype=dim_feats[2])
+        print("node_feats.shape=", node_feats.shape)
+    else:
+        print("node_feats not found")
     if os.path.exists('DATA/{}/edge_features.pt'.format(args.data)):
         edge_feats = get_shared_mem_array(
             'edge_feats', (dim_feats[3], dim_feats[4]), dtype=dim_feats[5])
+        print("edge_feats.shape=", edge_feats.shape)
+    else:
+        print("edge feats not found")
 sample_param, memory_param, gnn_param, train_param = parse_config(args.config)
 orig_batch_size = train_param['batch_size']
 if args.local_rank == 0:
@@ -146,6 +153,7 @@ if memory_param['type'] != 'none':
     mailbox = MailBox(memory_param, num_nodes,
                       dim_feats[4], node_memory, node_memory_ts, mails, mail_ts, next_mail_pos, update_mail_pos)
 
+total_feature_fetching_time = 0
 
 class DataPipelineThread(threading.Thread):
 
@@ -164,12 +172,15 @@ class DataPipelineThread(threading.Thread):
         self.block = None
 
     def run(self):
+        global total_feature_fetching_time
         with torch.cuda.stream(self.stream):
             # print(args.local_rank, 'start thread')
             nids, eids = get_ids(self.my_mfgs[0], node_feats, edge_feats)
             mfgs = mfgs_to_cuda(self.my_mfgs[0])
+            start = time.time()
             prepare_input(mfgs, node_feats, edge_feats, pinned=True, nfeat_buffs=pinned_nfeat_buffs,
                           efeat_buffs=pinned_efeat_buffs, nids=nids, eids=eids)
+            total_feature_fetching_time += time.time() - start
             if mailbox is not None:
                 mailbox.prep_input_mails(mfgs[0], use_pinned_buffers=False)
             self.mfgs = mfgs
@@ -199,8 +210,11 @@ class DataPipelineThread(threading.Thread):
         return self.block
 
 
+
+
 if args.local_rank < args.num_gpus:
     # GPU worker process
+    print("local_rank=", args.local_rank)
     model = GeneralModel(dim_feats[1], dim_feats[4], sample_param,
                          memory_param, gnn_param, train_param).to(f'cuda:{args.local_rank}')
     # find_unused_parameters = True if sample_param['history'] > 1 else False
@@ -215,6 +229,7 @@ if args.local_rank < args.num_gpus:
         mailbox.allocate_pinned_memory_buffers(
             sample_param, train_param['batch_size'])
     tot_loss = 0
+    iteration = 0
     prev_thread = None
     while True:
         my_model_state = [None]
@@ -265,9 +280,11 @@ if args.local_rank < args.num_gpus:
                 curr_thread = DataPipelineThread(
                     my_mfgs, my_root, my_ts, my_eid, my_block, stream)
                 curr_thread.start()
+
                 prev_thread.join()
                 # with torch.cuda.stream(prev_thread.get_stream()):
                 mfgs = prev_thread.get_mfgs()
+
                 model.train()
                 optimizer.zero_grad()
                 pred_pos, pred_neg = model(mfgs)
@@ -275,6 +292,12 @@ if args.local_rank < args.num_gpus:
                 loss += creterion(pred_neg, torch.zeros_like(pred_neg))
                 loss.backward()
                 optimizer.step()
+                iteration += 1
+
+                if iteration % 100 == 0:
+                    print(f"iter: {iteration}: total_feature_fetching_time: {total_feature_fetching_time}")
+
+
                 with torch.no_grad():
                     tot_loss += float(loss)
                 if mailbox is not None:
@@ -579,6 +602,8 @@ else:
                     mfgs = node_to_dgl_blocks(root_nodes, ts, cuda=False)
                 sample_time_end = time.time()
                 time_sample += sample_time_end - sample_time_start
+                if ite % 100 == 0:
+                    print(f'iter: {ite} sample_time: {time_sample} total_time: {time_tot}')
                 multi_mfgs.append(mfgs)
                 multi_root.append(root_nodes)
                 multi_ts.append(ts)

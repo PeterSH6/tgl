@@ -11,12 +11,12 @@ import torch.distributed as dist
 def load_feat(d, rand_de=0, rand_dn=0):
     node_feats = None
     if os.path.exists('DATA/{}/node_features.pt'.format(d)):
-        node_feats = torch.load('DATA/{}/node_features.pt'.format(d))
+        node_feats = torch.from_numpy(np.load('DATA/{}/node_features.npy'.format(d), allow_pickle=False))
         if node_feats.dtype == torch.bool:
             node_feats = node_feats.type(torch.float32)
     edge_feats = None
     if os.path.exists('DATA/{}/edge_features.pt'.format(d)):
-        edge_feats = torch.load('DATA/{}/edge_features.pt'.format(d))
+        edge_feats = torch.from_numpy(np.load('DATA/{}/edge_features.npy'.format(d), allow_pickle=False))
         if edge_feats.dtype == torch.bool:
             edge_feats = edge_feats.type(torch.float32)
     if rand_de > 0:

@@ -24,13 +24,13 @@ parser.add_argument('--seed', type=int, default=0, help='random seed to use')
 parser.add_argument('--num_gpus', type=int, default=4,
                     help='number of gpus to use')
 parser.add_argument('--omp_num_threads', type=int, default=8)
-parser.add_argument("--local_rank", type=int, default=-1)
+parser.add_argument("--local-rank", type=int, default=-1)
 args = parser.parse_args()
 
 print(args.local_rank)
 # set which GPU to use
 if args.local_rank < args.num_gpus:
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.local_rank)
+    pass
 else:
     os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['OMP_NUM_THREADS'] = str(args.omp_num_threads)
@@ -795,15 +795,16 @@ phase1_percent = 0.3
 curr_start = 0
 retrain_num = 100
 if args.local_rank < args.num_gpus:
-    phase1_start_time = time.time()
-    model, mailbox = main(phase1_percent, curr_start, phase1=True,
-                          model=model, optimizer=optimizer, mailbox=mailbox)
-    torch.distributed.barrier()
-    phase1_end_time = time.time()
+    # phase1_start_time = time.time()
+    # model, mailbox = main(phase1_percent, curr_start, phase1=True,
+    #                       model=model, optimizer=optimizer, mailbox=mailbox)
+    # torch.distributed.barrier()
+    # phase1_end_time = time.time()
     # print('phase1 time: {}'.format(phase1_end_time - phase1_start_time))
     # total_phase1_train_time += phase1_end_time - phase1_start_time
     # total_train_time += phase1_end_time - phase1_start_time
-    torch.save(model.state_dict(), 'TGN_GDELT.pt')
+    # torch.save(model.state_dict(), 'TGN_GDELT.pt')
+    # model.load_state_dict(torch.load("TGN_GDELT_"))
     phase2_percent = 1 - phase1_percent
     incremental_percent = phase2_percent / retrain_num
     for i in range(retrain_num):
